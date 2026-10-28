@@ -14,7 +14,7 @@
 | Client storage | Dexie (IndexedDB) | Client local-first nên sync delta theo seq |
 | `be/` | Chỉ chứa tài liệu thiết kế | — |
 | TS 6 | NestJS hỗ trợ chính thức TS 5.x | R12: chạy thử scaffold sớm |
-| Hosting | Chưa chốt, chờ tư vấn pháp lý | Dev dùng docker-compose (Postgres, MinIO, Mailpit); Redis chỉ thêm khi chạy nhiều instance hoặc tách worker. Không phụ thuộc vị trí hay nhà cung cấp |
+| Hosting | DB: **Supabase PostgreSQL** (chỉ dùng Postgres thuần). Nơi host NestJS chưa chốt; vùng dữ liệu chờ tư vấn pháp lý | Dev: docker-compose (Postgres, MinIO, Mailpit) hoặc Supabase dev project. Không Redis ở giai đoạn đầu |
 
 ## 1. Phân tích yêu cầu
 
@@ -222,6 +222,7 @@ Logic chat nhóm, gọi thoại/video, nhật ký, admin UI, tích hợp cổng 
 | D8 | Người đã xóa | **Tombstone `users`** | Khóa ngoại vẫn hợp lệ, không lặp PII |
 | D9 | Dedup file | **Theo từng user**: `unique(owner_id, sha256)` | Dedup chéo user làm lộ việc "ai đó có file này" |
 | D10 | Presence | **Trong bộ nhớ sau `PresenceStore`**; Redis (TTL) khi >1 instance | Dữ liệu tạm thời; MVP một tiến trình nên không cần Redis |
+| D15 | Kiến trúc tổng | **Frontend → NestJS (REST + Socket.IO) → Supabase PostgreSQL**, 1 instance | Không Redis, không Supabase Realtime, không Supabase Auth. Thêm Redis adapter chỉ khi chạy nhiều instance |
 | D14 | Hàng đợi job | **Bảng `jobs` trên Postgres** (`FOR UPDATE SKIP LOCKED`), thay BullMQ | Không có Redis ở MVP; job cần bền (xóa cứng sau ân hạn), chạy được nhiều worker. Chỉ cân nhắc BullMQ khi throughput job vượt khả năng Postgres |
 
 (Số D4, D5 bỏ trống vì đã gỡ cùng phạm vi AI; giữ nguyên số để tham chiếu ổn định.)

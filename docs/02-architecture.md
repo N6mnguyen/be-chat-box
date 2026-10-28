@@ -2,29 +2,25 @@
 
 ## 2.1 Thành phần và triển khai
 
+**Hướng chính thức (D15): Frontend → NestJS → Supabase PostgreSQL.** Socket.IO nằm trong NestJS.
+
 ```mermaid
 flowchart LR
-  subgraph Desktop["Desktop"]
-    UI["Angular + Dexie"] <-->|IPC| MAIN["Electron main + safeStorage<br/>Upload/download presigned"]
-  end
-  UI -->|HTTPS/WSS| LB["TLS + WS upgrade"]
-  LB --> APP["NestJS APP_ROLE=all<br/>REST + Socket.IO + jobs"]
-  APP --> PG[("PostgreSQL<br/>source of truth + jobs")]
-  APP --> MEM["PresenceStore + RateLimitStore<br/>in-memory (1 process)"]
-  APP --> S3[("Private object storage<br/>S3 compatible")]
-  MAIN -->|presigned PUT/GET| S3
-  APP --> MAIL["Mail provider<br/>SPF/DKIM/DMARC"]
-  PAY["Payment provider (later)"] -->|signed webhook| LB
-  SEC["Secret store<br/>JWT keys + versioned peppers"] -.-> APP
-  APP -.-> OBS["Metrics + redacted logs"]
-
-  APP -.->|"scale: APP_ROLE=api / worker"| SPLIT["N API + M worker<br/>same image"]
-  SPLIT -.-> REDIS[("Redis: Socket.IO adapter,<br/>PresenceStore, RateLimitStore,<br/>revocation fan-out")]
-  SPLIT --> PG
+  FE["Desktop app<br/>Angular + Electron"] -->|"HTTPS REST /v1<br/>+ WSS Socket.IO"| API["NestJS (1 instance)<br/>REST + Socket.IO + auth JWT tự quản<br/>+ job runner"]
+  API -->|"DATABASE_URL<br/>(transaction pooler, prepare=false)"| PG[("Supabase PostgreSQL<br/>nơi lưu trữ chính thức")]
+  MIG["Bước migrate (chạy 1 lần/deploy)"] -->|DIRECT_URL| PG
 ```
 
-- **D10:** MVP chỉ một tiến trình, presence/typing có TTL trong bộ nhớ qua `PresenceStore`; rate limits và token revocation dùng store trong bộ nhớ. Khi >1 tiến trình, thay các store + Socket.IO adapter bằng Redis. Restart làm mất presence và bộ đếm tạm; token được kiểm tra trạng thái `devices.revoked_at`/`users.status` trong Postgres ở mỗi thao tác nhạy cảm và khi WS xác thực lại.
-- **D13:** Một image: MVP `APP_ROLE=all` (REST, WS, xử lý job trong cùng tiến trình); sau tách `APP_ROLE=api|worker`. Job bền nằm trong bảng Postgres, lấy bằng `FOR UPDATE SKIP LOCKED`, **không dùng BullMQ khi chưa có Redis** (D14). Khi scale nhiều API instance, cần Redis; vẫn có thể giữ hàng đợi Postgres. `APP_ROLE=migrate` **chỉ chạy một lần** như bước deploy riêng trước khi khởi động phiên bản mới; không cho từng replica tự migrate. Migration dùng `DIRECT_URL` session pooler hoặc kết nối trực tiếp; runtime dùng `DATABASE_URL` transaction pooler, không dùng session locks/prepared statements.
+| Có trong luồng chat | Không dùng ở giai đoạn đầu |
+|---|---|
+| NestJS: REST, Socket.IO (kết nối giữ trong bộ nhớ), JWT + refresh tự quản, job đọc từ bảng `jobs` | **Redis** — chỉ xét Redis adapter khi chạy nhiều instance |
+| Supabase PostgreSQL — chỉ dùng như Postgres thuần | **Supabase Realtime** — Socket.IO đã phát tin, không chạy song song |
+| | **Supabase Auth** — NestJS tự xác thực (D1) |
+
+Phụ trợ, nằm ngoài luồng chat chính: lưu file đính kèm (S3 API, ví dụ Supabase Storage), gửi mail OTP. Cả hai đều do NestJS điều khiển.
+
+- **D10:** Một instance, nên Socket.IO rooms, presence/typing (`PresenceStore`) và rate limit (`RateLimitStore`) đều nằm trong bộ nhớ. Restart thì mất presence và bộ đếm tạm thời; client kết nối lại rồi sync theo seq. Thu hồi token kiểm `devices.revoked_at`/`users.status` trong Postgres trước mọi lần ghi và khi WS xác thực lại.
+- **D13:** Một tiến trình NestJS làm cả REST, WS lẫn job (job bền trong bảng Postgres, `FOR UPDATE SKIP LOCKED`; không BullMQ — D14). Migration chạy **một lần** ở bước deploy riêng qua `DIRECT_URL`, không để app tự migrate khi khởi động. **Khi cần nhiều instance** (ngoài phạm vi hiện tại): thêm Redis adapter cho Socket.IO, chuyển hai store sang Redis, cân nhắc tách job ra tiến trình riêng.
 - **D11:** Room Socket.IO `user:<userId>` và `device:<deviceId>`; fan-out 1-1 gửi cho hai user rooms. WS handshake kiểm JWT, trạng thái user/device. Hết hạn access token: server yêu cầu `auth:refresh`, cho thời gian ngắn rồi chủ động ngắt nếu không xác thực lại; client lấy access token mới qua REST và gửi lại. Logout từ xa/reset mật khẩu: ngắt socket ngay; kể cả bỏ lỡ sự kiện ngắt, server kiểm trạng thái device trước mọi write và ở lần re-auth. Khi có nhóm đông sau MVP, phát theo từng user room tốn O(thành viên); lúc đó cân nhắc room theo hội thoại và giới hạn kích thước nhóm.
 - **D12:** Electron **main process** gọi presigned PUT/GET, stream file, báo tiến trình qua IPC; hủy bằng AbortController; tiếp tục sau mất mạng: multipart upload nếu storage hỗ trợ hoặc upload lại từ đầu với file nhỏ, giữ `uploadId`/trạng thái local. Mỗi phần có checksum, xác nhận qua HEAD/complete. **Bản web sau này sẽ cần CORS** trên bucket cho origin đã duyệt.
 - Màn hình onboarding, giao diện thông báo và **trang tải app** phải nói rõ: **đóng hẳn app thì không nhận thông báo**; mở lại sẽ sync và hiện badge.

@@ -433,14 +433,20 @@ COMMIT;
 
 **Quyền riêng tư và backup:** mã hóa volume và backup; backup bất biến có thể còn dữ liệu đã xóa cho tới hết vòng đời backup (đề xuất ≤30 ngày), phải công bố. ⚖ Cần tư vấn pháp lý về retention tin đã gửi, bản chụp tin bị báo cáo, thời hạn audit/backup và nơi host. Phải tính cả object storage và cache client trong chính sách xuất/xóa.
 
-## 3.7 URL kết nối Postgres (mẫu do người dùng cung cấp)
+## 3.7 Kết nối NestJS → Supabase PostgreSQL
 
-- Runtime qua **transaction-mode pooler**: `DATABASE_URL` trỏ cổng `6543` và `?pgbouncer=true`. Drizzle không dùng tham số `pgbouncer` để tự tắt prepared statements; driver được chọn ở Bước 7 phải cấu hình tắt prepared statements theo API riêng. Không dùng `LISTEN`, session advisory lock, hoặc temp table có trạng thái session.
-- Migration một lần qua **session-mode pooler** cổng `5432`: `DIRECT_URL`. Ưu tiên direct DB connection nếu môi trường cho phép, vì migration DDL có thể cần lock lâu; kiểm tra chính sách pooler của host trước deploy.
+| Biến | Dùng cho | Chế độ Supabase | Cấu hình driver |
+|---|---|---|---|
+| `DATABASE_URL` | App runtime (Drizzle + `postgres` driver) | Transaction pooler, cổng `6543` | `postgres(url, { prepare: false })` — **bắt buộc**, transaction pooler không giữ prepared statement giữa các transaction. Tham số `?pgbouncer=true` là quy ước của Prisma, driver `postgres` bỏ qua nó |
+| `DIRECT_URL` | Migration (`drizzle-kit migrate`), chạy 1 lần/deploy | Session pooler cổng `5432` (IPv4), hoặc direct connection nếu hạ tầng có IPv6 | Mặc định |
+
+- Vì runtime đi qua transaction pooler: chỉ dùng **advisory lock theo transaction** (`pg_advisory_xact_lock`), không `LISTEN/NOTIFY`, không session lock, không temp table. Thiết kế seq ở §3.4 đã tuân theo.
+- Kích thước pool phía app nhỏ (ví dụ 10) vì pooler Supabase đã gộp kết nối; giới hạn kết nối theo gói Supabase — kiểm tra tài liệu hiện hành.
+- Env được validate lúc khởi động (zod): thiếu `DATABASE_URL` thì app không chạy; `DIRECT_URL` chỉ bắt buộc ở bước migrate.
 - **Không** đưa password mẫu vào tài liệu, commit hay log. Chỉ cấu hình biến môi trường/secret store. Chuỗi `YOUR-PASSWORD` là placeholder, không phải thông tin xác thực.
 
 ## 3.8 Cần xác nhận trước Bước 4
 
 1. `conversation_changes` **không lưu body** (đã áp dụng trong DDL). Lý do: lưu body trong change log tạo bản sao nội dung còn sót sau purge, mâu thuẫn quyền xóa. Đánh đổi: client không thấy trạng thái trung gian (tin tạo rồi bị thu hồi giữa hai lần sync chỉ hiện tombstone) — chấp nhận được.
-2. `jobs` trong Postgres (không BullMQ) để MVP không phụ thuộc Redis. Khi cần BullMQ sau này, đổi adapter; có đồng ý với thay đổi so với công nghệ ban đầu?
+2. `jobs` trong Postgres (không BullMQ), khớp hướng "không Redis giai đoạn đầu" (D15).
 3. Thời gian ân hạn xóa tài khoản 30 ngày; giữ username 180 ngày; audit 180 ngày; backup ≤30 ngày — **tất cả là giá trị đề xuất**, cần tư vấn pháp lý.
