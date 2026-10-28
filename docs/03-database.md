@@ -134,4 +134,4 @@ Chuỗi kết nối người dùng cung cấp đặt DB ở Tokyo (`ap-northeast
 
 Chạy: `docker compose up -d`, `npm install`, rồi `TEST_DATABASE_URL=postgres://postgres:postgres@localhost:54329/postgres npm run test:db`. Nếu không có `TEST_DATABASE_URL`, test tự chạy `embedded-postgres` (binary Postgres thật).
 
-**Trạng thái:** test đã viết nhưng **chưa chạy được**: máy này không có Docker, `npm install` bị chặn bởi quyền. Không coi Bước 3 đã được kiểm chứng cho tới khi test qua.
+**Trạng thái (2026-10-28):** 9/9 test qua trên embedded-postgres 17 (UTF8). Mục 9 (anon key Supabase thật) còn chờ làm thủ công.

@@ -28,7 +28,8 @@ before(async () => {
   }
   const admin = new pg.Client(adminUrl);
   await admin.connect();
-  await admin.query(`CREATE DATABASE ${DB}`);
+  // UTF8 như Supabase; template0 vì cluster Windows có thể mặc định WIN1252.
+  await admin.query(`CREATE DATABASE ${DB} ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`);
   // Mô phỏng role công khai của Supabase để test chặn truy cập.
   await admin.query(`DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF;
