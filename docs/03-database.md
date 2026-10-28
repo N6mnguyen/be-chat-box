@@ -1,6 +1,6 @@
-# Bước 3 — Cơ sở dữ liệu (đề xuất, chờ xác nhận)
+# Bước 3 — Cơ sở dữ liệu (đã xác nhận về thiết kế; kiểm chứng DB đang chờ)
 
-> PostgreSQL thuần; UUID do app sinh (`crypto.randomUUID()`), thời gian do DB cấp; `BIGINT` seq trả qua API dạng **string** để không mất chính xác trong JavaScript. DDL là thiết kế, **chưa chạy migration**. Nơi host chưa chốt; dev dùng docker-compose. Không tạo bảng hay trường dành cho AI.
+> PostgreSQL thuần trên Supabase; UUID do app sinh (`crypto.randomUUID()`), thời gian do DB cấp; `BIGINT` seq trả qua API dạng **string** để không mất chính xác trong JavaScript. **DDL chuẩn nằm tại [`../db/schema.sql`](../db/schema.sql), role/grant/RLS tại [`../db/roles.sql`](../db/roles.sql).** Nơi chạy NestJS chưa chốt; dev dùng docker-compose. Không tạo bảng hay trường dành cho AI.
 
 ## 3.1 Quy tắc dữ liệu
 
