@@ -1,8 +1,8 @@
 # Bước 4 — Hợp đồng API (REST + WebSocket)
 
-> Trạng thái: **ĐÃ XÁC NHẬN (v2, 2026-10-28)**, áp dụng Q1–Q7 và (a)–(e). Chỉ thiết kế; chưa có code NestJS. Migration §9 đã làm, test DB 18/18 qua; contract 17/17 test qua.
-> Nguồn chuẩn (code): [`vchat/packages/api-contracts`](../../vchat/packages/api-contracts). Zod schema → type TS → [`openapi.yaml`](../../vchat/packages/api-contracts/openapi.yaml) (sinh tự động, 49 operation). 13 test hợp đồng qua; `tsc --strict` sạch.
-> Đối chiếu với [`db/schema.sql`](../db/schema.sql) đã qua 9/9 test DB. Chỗ lệch giữa contract và schema được liệt kê ở §9; schema chưa bị sửa.
+> Trạng thái: **ĐÃ XÁC NHẬN (v2, 2026-10-28)**, áp dụng Q1–Q7 và (a)–(e). BE local hiện có Google OAuth, refresh token rotation/logout, `/v1/me`, danh sách/tìm tài khoản discoverable, users/friend requests/friends, direct conversations, message history/send/edit/recall/hide/reactions/receipts và pin/mute. Contract vẫn mô tả phạm vi rộng hơn: email/OTP/password auth, profile/settings mutations, blocks, reports, sync/change log, device management và WebSocket chưa được triển khai. `npm run dev` dùng embedded PostgreSQL tạm nếu không có `DATABASE_URL`; dữ liệu sẽ mất khi dừng server.
+> Nguồn chuẩn (code): [`vchat/packages/api-contracts`](../../vchat/packages/api-contracts). Zod schema → type TS → [`openapi.yaml`](../../vchat/packages/api-contracts/openapi.yaml) (sinh tự động, 52 operation). 17 test hợp đồng qua; `tsc --strict` sạch.
+> Đối chiếu với [`db/schema.sql`](../db/schema.sql) đã qua 18/18 test DB. Chỗ lệch giữa contract và schema được liệt kê ở §9; schema chưa bị sửa.
 
 ## 1. Quy ước chung
 
@@ -79,6 +79,7 @@ Cột: **Auth** (P = public, T = token, T+P = token + mật khẩu trong body) �
 | Method & path | Auth | Request → Response | Lỗi | RL | Idem | Quyền / ghi chú |
 |---|---|---|---|---|---|---|
 | `POST /v1/auth/register` | P | `{username,email,password,deviceName}` → **202** `{registrationId}` | 400, 409 `USERNAME_TAKEN`, 429, 503 | register | N | `registrationId` **luôn ngẫu nhiên**. Email đã active: không lưu gì, chỉ đưa mail cảnh báo vào job. Email pending: đè. Luôn 202 cùng hình dạng |
+| `POST /v1/auth/google` | P | `{accessToken}` (Google access token) → 200 `{accessToken,accessExpiresAt,user}` | 400, 401 `INVALID_CREDENTIALS`, 429, 503 | login | — | Đã triển khai local. BE xác minh token với Google, bắt buộc đúng `GOOGLE_CLIENT_ID` và email đã xác minh; phát JWT ứng dụng 10 phút. Tự tạo account hoặc liên kết email đã xác minh. Chưa phát refresh/device token |
 | `POST /v1/auth/verify-email` | P | `{registrationId, code}` → 200 `TokenPair` (+`deviceToken`) | 400, 422 `OTP_INVALID`, 429 | otp-verify | — | Chuyển `pending → active`; thiết bị này thành tin cậy |
 | `POST /v1/auth/resend-otp` | P | `{purpose:"register",registrationId}` hoặc `{purpose:"device",challengeId}` → 202 | 400, 429 | otp-send | N | Id giả hoặc hết hạn vẫn 202 |
 | `POST /v1/auth/login` | P | `{identifier,password,deviceName,deviceToken?}` → 200 `TokenPair` **hoặc** `OtpChallenge` | 400, 401 `INVALID_CREDENTIALS`, 403 `DEVICE_LIMIT_REACHED`, 429, 503 | login | — | Thứ tự: rate limit → semaphore → Argon2 (thật/giả) → so sánh. Tài khoản `deleting` + mật khẩu đúng: `TokenPair{scope:"restore"}`, không hỏi OTP thiết bị, không cấp deviceToken. Thiết bị mới + `newDeviceOtp` thì trả challenge. Trạng thái "OTP_REQUIRED" được biểu diễn bằng body 200 `{challenge:"device_otp"}`, không phải lỗi (Q1) |
@@ -326,6 +327,7 @@ POST /v1/conversations/7f3a…/messages/m01…/recall
 | 9.5 | `conversation_members.pinned_at` | Schema |
 | 9.6 | `user_settings.discoverable`, `read_receipts`, `hide_online` | Schema + test discoverable |
 | 9.7 | `app.recall_message`: người gửi, 24h, seq mới, idempotent | Có test |
+| 9.8 | `messages.edited_at`, `conversation_changes.kind='edited'`, `message_reactions` | Migration `20261028_z_chat_api.sql` |
 | Q3 | `friend_requests.suppressed`, `expires_at`; `send_friend_request` luôn tạo bản ghi khi người nhận active | Có test |
 | 9.11 | `replace_recovery_codes`: xóa bộ cũ và chèn bộ mới trong một transaction | Có test |
 

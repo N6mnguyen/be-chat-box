@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 import pg from 'pg';
+import { startEmbeddedPostgres } from '../embedded-postgres.js';
 
 const sql = (f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
 const DB = `vchat_test_${process.pid}`;
@@ -14,14 +15,8 @@ export const h = { owner: null, app: null, anon: null,
 export async function setup() {
   adminUrl = process.env.TEST_DATABASE_URL;
   if (!adminUrl) {
-    const { default: EmbeddedPostgres } = await import('embedded-postgres');
-    embedded = new EmbeddedPostgres({
-      databaseDir: `${process.env.TMPDIR ?? process.env.TEMP ?? '/tmp'}/vchat-pg-${process.pid}`,
-      user: 'postgres', password: 'postgres', port: 54330 + (process.pid % 1000), persistent: false,
-    });
-    await embedded.initialise();
-    await embedded.start();
-    adminUrl = `postgres://postgres:postgres@localhost:${54330 + (process.pid % 1000)}/postgres`;
+    embedded = await startEmbeddedPostgres({ name: 'vchat-pg' });
+    adminUrl = embedded.adminUrl;
   }
   const admin = new pg.Client(adminUrl);
   await admin.connect();
@@ -53,7 +48,7 @@ export async function teardown() {
   await admin.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
   await admin.end();
   // Windows đôi lúc giữ file khi Postgres vừa dừng; EBUSY không phải test lỗi.
-  await embedded?.stop().catch((e) => { if (e.code !== 'EBUSY') throw e; });
+  await embedded?.stop();
 }
 
 h.tx = async (fn) => {

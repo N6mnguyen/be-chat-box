@@ -17,6 +17,8 @@ flowchart LR
 | Supabase PostgreSQL — chỉ dùng như Postgres thuần | **Supabase Realtime** — Socket.IO đã phát tin, không chạy song song |
 | | **Supabase Auth** — NestJS tự xác thực (D1) |
 
+Local dev: `npm run dev` chạy API ở `http://localhost:3000`, cho phép CORS từ `http://localhost:4200`; đặt `DATABASE_URL` trong `be-chat-box/.env` để dùng PostgreSQL bền vững (ví dụ Supabase). Nếu thiếu, BE cảnh báo và dùng PostgreSQL nhúng tạm thời; dữ liệu bị xóa khi dừng. Các API Google OAuth, hồ sơ, tìm tài khoản/bạn bè, hội thoại và tin nhắn đã được triển khai; WebSocket và các luồng auth email/OTP/password chưa có.
+
 Phụ trợ, nằm ngoài luồng chat chính: lưu file đính kèm (S3 API, ví dụ Supabase Storage), gửi mail OTP. Cả hai đều do NestJS điều khiển.
 
 - **D10:** Một instance, nên Socket.IO rooms, presence/typing (`PresenceStore`) và rate limit (`RateLimitStore`) đều nằm trong bộ nhớ. Restart thì mất presence và bộ đếm tạm thời; client kết nối lại rồi sync theo seq. Thu hồi token kiểm `devices.revoked_at`/`users.status` trong Postgres trước mọi lần ghi và khi WS xác thực lại.

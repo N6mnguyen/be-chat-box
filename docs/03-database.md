@@ -1,4 +1,4 @@
-# Bước 3 — Cơ sở dữ liệu (đã xác nhận về thiết kế; kiểm chứng DB đang chờ)
+# Bước 3 — Cơ sở dữ liệu (đã xác nhận về thiết kế; DB tests đã kiểm chứng)
 
 > PostgreSQL thuần trên Supabase; UUID do app sinh (`crypto.randomUUID()`), thời gian do DB cấp; `BIGINT` seq trả qua API dạng **string**. DDL chuẩn: [schema.sql](../db/schema.sql), role/grant/RLS: [roles.sql](../db/roles.sql). Nơi host NestJS chưa chốt.
 
@@ -14,6 +14,7 @@
 ```mermaid
 erDiagram
   users ||--o{ identities : owns
+  users ||--o| google_identities : owns
   users ||--o{ devices : owns
   devices ||--o{ refresh_tokens : rotates
   users ||--o{ auth_challenges : requests
@@ -42,6 +43,7 @@ erDiagram
 
 - [schema.sql](../db/schema.sql): bảng, PK/FK/CHECK/index, `unique(conversation_id, created_seq)`, `unique(conversation_id, client_msg_id)`, hàm cấp seq, cursor, dọn change log và claim/complete/fail job.
 - [roles.sql](../db/roles.sql): role `vchat_app`, GRANT, RLS.
+- `google_identities` lưu Google `sub` duy nhất và liên kết với user; migration cho DB đã tồn tại: [20261028_google_identities.sql](../db/migrations/20261028_google_identities.sql).
 - Schema riêng `app`, không dùng `public`; Supabase Data API mặc định chỉ expose `public`.
 - Những ràng buộc liên bảng xử lý trong transaction và test: đúng 2 member cho `direct`, quyền bạn bè/chặn, giữ chỗ username.
 - **File đính kèm dời khỏi MVP đợt đầu.** Giữ `attachments`, `message_attachments` và interface `StorageService` làm chỗ cắm; API chưa bật. Đây là hạng mục đầu tiên sau MVP.
@@ -115,6 +117,24 @@ Các giá trị đề xuất, cấu hình được; job chạy hằng ngày, the
 | `DIRECT_URL` | `postgres` | Session pooler 5432 hoặc direct khi có IPv6 | Chỉ dùng migration, một lần/deploy |
 
 Chỉ dùng `pg_advisory_xact_lock`, không `LISTEN/NOTIFY` hoặc session lock. `max:10` là giá trị khởi điểm; kiểm tra giới hạn kết nối theo gói Supabase. Mật khẩu chỉ trong secret store/env, không vào repo/log.
+
+### Kết nối API local tới Supabase
+
+BE chỉ kết nối tới Supabase PostgreSQL khi `DATABASE_URL` được đặt trong `be-chat-box/.env`. URL project và publishable/anon key không phải thông tin kết nối PostgreSQL. Khi thiếu biến này, `npm run dev` dùng embedded PostgreSQL tạm; dữ liệu nằm ngoài Supabase và mất khi tiến trình dừng.
+
+Trên project Supabase mới:
+1. Đặt `DIRECT_URL` là URL PostgreSQL direct/session pooler dùng role `postgres`.
+2. Tạo mật khẩu riêng cho role ứng dụng. Đặt cùng giá trị vào `VCHAT_APP_PASSWORD` và password trong `DATABASE_URL`; URL `DATABASE_URL` dùng Transaction Pooler (cổng 6543) và role `vchat_app.<project-ref>`.
+3. Chạy `npm run db:supabase:init` trong `be-chat-box`. Lệnh khởi tạo `db/schema.sql`, quyền trong `db/roles.sql`, và đặt mật khẩu cho role `vchat_app`; nếu schema `app` đã tồn tại nhưng chưa có object thì vẫn có thể khởi tạo. Nếu `app` đã có bảng, hàm, kiểu dữ liệu hoặc object khác, lệnh dừng mà không thay đổi database; chỉ chạy các migration còn thiếu. Không dùng service-role/publishable key thay cho mật khẩu DB.
+4. Chạy BE với `.env` đã cấu hình. Google login lưu dữ liệu trong `app.users`, `app.identities`, `app.google_identities` và `app.user_settings`.
+
+Đếm số tài khoản bằng `npm run db:supabase:count-users` trong `be-chat-box`, hoặc trong Supabase SQL Editor chạy:
+
+```sql
+SELECT count(*) FROM app.users;
+```
+
+Đây là schema `app`, không phải Supabase Auth `auth.users` hay schema `public`; trong Supabase Table Editor cần chọn schema `app` để xem. `/v1/me` đọc hồ sơ từ các bảng này.
 
 Chuỗi kết nối người dùng cung cấp đặt DB ở Tokyo (`ap-northeast-1`), ngoài Việt Nam. ⚖ Cần tư vấn pháp lý về chuyển dữ liệu ra nước ngoài. **Nơi host NestJS** phải hỗ trợ WebSocket sống lâu, gần/cùng vùng với DB; chưa chốt cho tới khi có ý kiến pháp lý.
 

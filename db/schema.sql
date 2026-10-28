@@ -3,7 +3,7 @@
 -- Schema riêng "app" (không phải public): Supabase Data API mặc định chỉ expose public.
 -- UUID do app sinh; thời gian do DB cấp; seq BIGINT trả qua API dạng string.
 
-CREATE SCHEMA app;
+CREATE SCHEMA IF NOT EXISTS app;
 
 CREATE TABLE app.users (
   id uuid PRIMARY KEY,
@@ -48,6 +48,12 @@ CREATE TABLE app.identities (
   CONSTRAINT identities_type_value_unique UNIQUE (type, value)
 );
 CREATE INDEX identities_user_id_idx ON app.identities (user_id);
+
+CREATE TABLE app.google_identities (
+  google_sub varchar(255) PRIMARY KEY,
+  user_id uuid NOT NULL UNIQUE REFERENCES app.users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE app.reserved_usernames (
   username varchar(30) PRIMARY KEY,
@@ -213,6 +219,7 @@ CREATE TABLE app.messages (
   reply_to_id uuid,
   body text,
   body_deleted_at timestamptz,
+  edited_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT messages_conversation_seq_unique UNIQUE (conversation_id, created_seq),
@@ -231,7 +238,7 @@ CREATE TABLE app.conversation_changes (
   conversation_id uuid NOT NULL REFERENCES app.conversations(id),
   seq bigint NOT NULL CHECK (seq > 0),
   message_id uuid NOT NULL,
-  kind varchar(12) NOT NULL CHECK (kind IN ('created','recalled','purged','redacted')),
+  kind varchar(12) NOT NULL CHECK (kind IN ('created','edited','recalled','purged','redacted')),
   changed_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (conversation_id, seq),
   FOREIGN KEY (conversation_id, message_id) REFERENCES app.messages (conversation_id, id)
@@ -245,6 +252,15 @@ CREATE TABLE app.message_hidden_for (
   PRIMARY KEY (message_id, user_id)
 );
 CREATE INDEX message_hidden_for_user ON app.message_hidden_for (user_id, message_id);
+
+CREATE TABLE app.message_reactions (
+  message_id uuid NOT NULL REFERENCES app.messages(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES app.users(id),
+  emoji varchar(16) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (message_id, user_id, emoji)
+);
+CREATE INDEX message_reactions_message ON app.message_reactions (message_id);
 
 -- Báo cáo vi phạm. vchat_app chỉ INSERT (qua app.create_report); chỉ vchat_moderator đọc (roles.sql).
 -- ⚖ snapshot là bản sao nội dung tin (gồm vài tin liền kề); không bị purge xóa; thời hạn chờ pháp lý.
