@@ -1,0 +1,13 @@
+# Postgres local cho dev/test. Cùng major version với Supabase project (kiểm tra trong dashboard).
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "54329:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 15
+# Test: TEST_DATABASE_URL=postgres://postgres:postgres@localhost:54329/postgres npm run test:db

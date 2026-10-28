@@ -1,0 +1,8 @@
+{
+  "name": "vchat-be-design",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:db": "node --test db/test/"
+  }
+}
