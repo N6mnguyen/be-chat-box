@@ -1,90 +1,15 @@
-// Kiểm tra DDL Bước 3 trên Postgres thật.
-// TEST_DATABASE_URL trỏ tới Postgres trống (docker-compose); nếu không có, tự chạy embedded-postgres.
-// Mỗi lần chạy tạo database tạm rồi xóa.
+// Kiểm tra DDL Bước 3 trên Postgres thật (harness.js: TEST_DATABASE_URL hoặc embedded-postgres).
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { randomUUID, createHash } from 'node:crypto';
-import pg from 'pg';
+import { randomUUID } from 'node:crypto';
+import { setup, teardown, h } from './harness.js';
 
-const sql = (f) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
-const hash = (s) => createHash('sha256').update(s).digest();
-const DB = `vchat_test_${process.pid}`;
-const APP_PW = 'test_only_pw';
-
-let embedded, adminUrl, owner, app, anon;
-
-before(async () => {
-  adminUrl = process.env.TEST_DATABASE_URL;
-  if (!adminUrl) {
-    const { default: EmbeddedPostgres } = await import('embedded-postgres');
-    embedded = new EmbeddedPostgres({
-      databaseDir: `${process.env.TMPDIR ?? process.env.TEMP ?? '/tmp'}/vchat-pg-${process.pid}`,
-      user: 'postgres', password: 'postgres', port: 54330, persistent: false,
-    });
-    await embedded.initialise();
-    await embedded.start();
-    adminUrl = 'postgres://postgres:postgres@localhost:54330/postgres';
-  }
-  const admin = new pg.Client(adminUrl);
-  await admin.connect();
-  // UTF8 như Supabase; template0 vì cluster Windows có thể mặc định WIN1252.
-  await admin.query(`CREATE DATABASE ${DB} ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`);
-  // Mô phỏng role công khai của Supabase để test chặn truy cập.
-  await admin.query(`DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon') THEN CREATE ROLE anon NOLOGIN; END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='anon_login') THEN
-      CREATE ROLE anon_login LOGIN PASSWORD 'anon_pw' IN ROLE anon; END IF; END $$`);
-  await admin.end();
-
-  const u = new URL(adminUrl); u.pathname = `/${DB}`;
-  owner = new pg.Pool({ connectionString: u.href, max: 2 });
-  await owner.query(sql('schema.sql'));
-  await owner.query(sql('roles.sql'));
-  await owner.query(`ALTER ROLE vchat_app PASSWORD '${APP_PW}'`);
-  // Mô phỏng Supabase: anon có quyền mặc định trên mọi bảng mới (default privileges).
-  await owner.query('GRANT USAGE ON SCHEMA app TO anon');
-  await owner.query('GRANT SELECT ON ALL TABLES IN SCHEMA app TO anon');
-
-  const au = new URL(u.href); au.username = 'vchat_app'; au.password = APP_PW;
-  app = new pg.Pool({ connectionString: au.href, max: 60 });
-  const nu = new URL(u.href); nu.username = 'anon_login'; nu.password = 'anon_pw';
-  anon = new pg.Client(nu.href);
-  await anon.connect();
-});
-
-after(async () => {
-  await anon?.end(); await app?.end(); await owner?.end();
-  const admin = new pg.Client(adminUrl);
-  await admin.connect();
-  await admin.query(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
-  await admin.end();
-  await embedded?.stop();
-});
-
-async function friendsWithConversation() {
-  const [a, b] = [randomUUID(), randomUUID()].sort();
-  const conv = randomUUID();
-  await owner.query(`INSERT INTO app.users (id, username, status) VALUES ($1,$2,'active'),($3,$4,'active')`,
-    [a, `u${a.slice(0, 8)}`, b, `u${b.slice(0, 8)}`]);
-  await owner.query('INSERT INTO app.friendships VALUES ($1,$2)', [a, b]);
-  await owner.query(`INSERT INTO app.conversations (id, type, direct_user_low, direct_user_high)
-    VALUES ($1,'direct',$2,$3)`, [conv, a, b]);
-  await owner.query('INSERT INTO app.conversation_members (conversation_id, user_id) VALUES ($1,$2),($1,$3)', [conv, a, b]);
-  return { a, b, conv };
-}
-
-// Mỗi lần gửi = một transaction riêng (như NestJS qua transaction pooler).
-async function send(conv, sender, clientMsgId, body) {
-  const c = await app.connect();
-  try {
-    await c.query('BEGIN');
-    const { rows } = await c.query('SELECT * FROM app.send_direct_message($1,$2,$3,$4,$5,$6)',
-      [randomUUID(), conv, sender, clientMsgId, hash(body), body]);
-    await c.query('COMMIT');
-    return rows[0];
-  } catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
-}
+before(setup, { timeout: 120_000 });
+after(teardown);
+const { friendsWithConversation, send } = h;
+const owner = new Proxy({}, { get: (_, k) => h.owner[k].bind(h.owner) });
+const app = new Proxy({}, { get: (_, k) => h.app[k].bind(h.app) });
+const anon = new Proxy({}, { get: (_, k) => h.anon[k].bind(h.anon) });
 
 test('50 lần gửi đồng thời cùng hội thoại: seq 1..50 không trùng, không hụt', async () => {
   const { a, b, conv } = await friendsWithConversation();

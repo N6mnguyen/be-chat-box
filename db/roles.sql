@@ -14,6 +14,17 @@ ALTER ROLE vchat_app SET search_path = app;
 REVOKE ALL ON SCHEMA app FROM PUBLIC;
 GRANT USAGE ON SCHEMA app TO vchat_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app TO vchat_app;
+-- reports: vchat_app không có quyền trực tiếp; chỉ ghi qua app.create_report (SECURITY DEFINER).
+-- Chỉ vchat_moderator đọc và đóng vụ việc.
+REVOKE ALL ON app.reports FROM vchat_app;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vchat_moderator') THEN
+    CREATE ROLE vchat_moderator NOLOGIN; -- cấp cho tài khoản người xử lý bằng GRANT vchat_moderator TO ...
+  END IF;
+END $$;
+GRANT USAGE ON SCHEMA app TO vchat_moderator;
+GRANT SELECT ON app.reports TO vchat_moderator;
+GRANT UPDATE (status, closed_at) ON app.reports TO vchat_moderator;
 -- Append-only: audit_logs không UPDATE/DELETE; deletion_ledger chỉ cập nhật exported_at.
 REVOKE UPDATE, DELETE ON app.audit_logs FROM vchat_app;
 REVOKE UPDATE, DELETE ON app.deletion_ledger FROM vchat_app;
@@ -46,3 +57,5 @@ BEGIN
     EXECUTE format('CREATE POLICY vchat_app_all ON app.%I TO vchat_app USING (true) WITH CHECK (true)', t);
   END LOOP;
 END $$;
+DROP POLICY IF EXISTS moderator_reports ON app.reports;
+CREATE POLICY moderator_reports ON app.reports TO vchat_moderator USING (true) WITH CHECK (true);
