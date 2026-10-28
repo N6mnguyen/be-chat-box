@@ -539,8 +539,8 @@ BEGIN
   UPDATE app.friend_requests SET status = 'cancelled', updated_at = now()
    WHERE status = 'pending'
      AND ((sender_id = p_blocker AND recipient_id = p_blocked)
-       OR (sender_id = p_blocked AND recipient_id = p_blocker AND NOT suppressed));
-  -- Lời mời suppressed từ người bị chặn giữ nguyên: người gửi vẫn thấy "đang chờ" tới khi hết hạn.
+       OR (sender_id = p_blocked AND recipient_id = p_blocker));
+  -- Lời mời đã tồn tại bị hủy cả hai chiều; lời mời gửi SAU khi chặn sẽ được lưu suppressed.
   INSERT INTO app.user_blocks (blocker_id, blocked_id) VALUES (p_blocker, p_blocked)
   ON CONFLICT DO NOTHING;
 END $$;
