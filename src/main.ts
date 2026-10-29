@@ -1,12 +1,9 @@
 import 'reflect-metadata';
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
-import express, { NextFunction, Request, Response } from 'express';
 import { Client, Pool } from 'pg';
-import { ApiExceptionFilter } from './api-exception.filter.js';
-import { AppModule } from './app.module.js';
+import { createApp } from './bootstrap.js';
 import { startEmbeddedPostgres } from '../db/embedded-postgres.js';
 
 const DEV_MODE = process.argv.includes('--dev');
@@ -41,41 +38,8 @@ async function main(): Promise<void> {
     const databasePool = new Pool({ connectionString, max: 10 });
     pool = databasePool;
     await databasePool.query('SELECT 1');
-    const application = await NestFactory.create(
-      AppModule.register({ pool: databasePool, googleClientId, jwtSecret }),
-      { bodyParser: false },
-    );
+    const application = await createApp(databasePool, googleClientId, jwtSecret);
     app = application;
-    application.getHttpAdapter().getInstance().disable('x-powered-by');
-    application.enableCors({
-      origin: (process.env.CORS_ORIGINS ?? 'http://localhost:4200')
-        .split(',')
-        .map((origin) => origin.trim())
-        .filter(Boolean),
-      methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id'],
-      exposedHeaders: ['X-Request-Id'],
-    });
-    application.use(express.json({ limit: '16kb' }));
-    application.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
-      if (!error) {
-        next();
-        return;
-      }
-      const status = typeof error === 'object' && error !== null && 'status' in error && error.status === 413
-        ? 413
-        : 400;
-      const requestId = randomBytes(16).toString('hex');
-      response.setHeader('X-Request-Id', requestId);
-      response.status(status).json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: status === 413 ? 'Yêu cầu vượt quá kích thước cho phép.' : 'JSON không hợp lệ.',
-          requestId,
-        },
-      });
-    });
-    application.useGlobalFilters(new ApiExceptionFilter());
 
     const port = Number(process.env.PORT ?? 3000);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
