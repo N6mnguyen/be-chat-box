@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import { randomBytes } from 'node:crypto';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplication } from '@nestjs/common';
