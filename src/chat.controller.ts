@@ -14,11 +14,14 @@ import {
   Query,
   Req,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { Pool, QueryResultRow } from 'pg';
 import { AppJwtGuard, AuthenticatedRequest } from './app-jwt.guard.js';
 import { PG_POOL } from './google-auth.service.js';
+import { RealtimeInterceptor } from './realtime.interceptor.js';
+import { RealtimeService } from './realtime.service.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -41,15 +44,23 @@ interface ApiMessageRow extends QueryResultRow {
   reply_deleted_at: Date | null;
   reply_hidden: boolean;
   reactions: Array<{ emoji: string; count: number; mine: boolean }> | null;
+  attachments: Array<{ id: string; name: string; size: number; mimeType: string }> | null;
   delivery_status: 'sent' | 'delivered' | 'seen';
 }
 
 @Controller('v1')
 @UseGuards(AppJwtGuard)
+@UseInterceptors(RealtimeInterceptor)
 export class ChatController {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(RealtimeService) private readonly realtime: RealtimeService,
   ) {}
+
+  @Get('realtime')
+  getRealtime(@Req() request: AuthenticatedRequest) {
+    return this.realtime.config(request.userId) ?? {};
+  }
 
   @Get('me')
   async getMe(@Req() request: AuthenticatedRequest) {
@@ -125,7 +136,7 @@ export class ChatController {
                            WHERE uh.message_id = um.id AND uh.user_id = cm.user_id)
        ) unread ON true
        LEFT JOIN LATERAL (${MESSAGE_SELECT}
-         WHERE m.conversation_id = c.id
+         WHERE m.conversation_id = cm.conversation_id
            AND NOT EXISTS (SELECT 1 FROM app.message_hidden_for hidden
                            WHERE hidden.message_id = m.id AND hidden.user_id = $1)
          ORDER BY m.created_seq DESC LIMIT 1) lm ON true
@@ -283,27 +294,66 @@ export class ChatController {
   ) {
     requireUuid(conversationId);
     const payload = record(body);
+    const attachments = payload.attachments ?? [];
+    const text = typeof payload.body === 'string' ? payload.body : '';
     if (
       !isUuid(payload.clientMsgId) ||
       typeof payload.body !== 'string' ||
-      !payload.body.trim() ||
+      (!text.trim() && (!Array.isArray(attachments) || attachments.length === 0)) ||
       payload.body.length > 10_000 ||
       (payload.replyToId !== null && payload.replyToId !== undefined && !isUuid(payload.replyToId)) ||
-      (payload.attachments !== undefined && (!Array.isArray(payload.attachments) || payload.attachments.length > 0))
+      !Array.isArray(attachments) ||
+      attachments.length > 20 ||
+      attachments.some((id) => !isUuid(id)) ||
+      new Set(attachments).size !== attachments.length
     ) {
       throw validationError();
     }
-    const text = payload.body;
     const replyToId = typeof payload.replyToId === 'string' ? payload.replyToId : null;
     const requestHash = createHash('sha256')
-      .update(JSON.stringify({ body: text, replyToId, attachments: [] }))
+      .update(JSON.stringify({ body: text, replyToId, attachments }))
       .digest();
-    const sent = await this.pool.query<{ message_id: string; duplicate: boolean }>(
-      `SELECT message_id, duplicate FROM app.send_direct_message($1, $2, $3, $4, $5, $6, $7)`,
-      [randomUUID(), conversationId, request.userId, payload.clientMsgId, requestHash, text, replyToId],
-    );
-    const message = await this.getMessage(request.userId, conversationId, sent.rows[0].message_id);
-    return { message, duplicate: sent.rows[0].duplicate };
+    const client = await this.pool.connect();
+    let messageId: string;
+    let duplicate: boolean;
+    try {
+      await client.query('BEGIN');
+      if (attachments.length) {
+        const ownedAttachments = await client.query(
+          `SELECT id FROM app.attachments
+           WHERE id = ANY($1::uuid[]) AND owner_id = $2 AND status = 'ready'
+           FOR UPDATE`,
+          [attachments, request.userId],
+        );
+        if (ownedAttachments.rowCount !== attachments.length) {
+          throw notFound();
+        }
+      }
+      const sent = await client.query<{ message_id: string; duplicate: boolean }>(
+        `SELECT message_id, duplicate
+         FROM app.send_direct_message($1, $2, $3, $4, $5, $6, $7)`,
+        [randomUUID(), conversationId, request.userId, payload.clientMsgId, requestHash, text, replyToId],
+      );
+      messageId = sent.rows[0].message_id;
+      duplicate = sent.rows[0].duplicate;
+      if (attachments.length) {
+        await client.query(
+          `INSERT INTO app.message_attachments (message_id, attachment_id, position)
+           SELECT $1, attachment_id, (ordinality - 1)::smallint
+           FROM unnest($2::uuid[]) WITH ORDINALITY AS item(attachment_id, ordinality)
+           ON CONFLICT DO NOTHING`,
+          [messageId, attachments],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+    const message = await this.getMessage(request.userId, conversationId, messageId);
+    return { message, duplicate };
   }
 
   @Patch('conversations/:conversationId/messages/:messageId')
@@ -839,7 +889,7 @@ export class ChatController {
                            WHERE uh.message_id = um.id AND uh.user_id = cm.user_id)
        ) unread ON true
        LEFT JOIN LATERAL (${MESSAGE_SELECT}
-         WHERE m.conversation_id = c.id
+         WHERE m.conversation_id = cm.conversation_id
            AND NOT EXISTS (SELECT 1 FROM app.message_hidden_for hidden
                            WHERE hidden.message_id = m.id AND hidden.user_id = $1)
          ORDER BY m.created_seq DESC LIMIT 1) lm ON true
@@ -979,6 +1029,7 @@ const MESSAGE_SELECT = `
          reply.body_deleted_at AS reply_deleted_at,
          COALESCE(reply_hidden.hidden, false) AS reply_hidden,
          COALESCE(reaction_list.items, '[]'::jsonb) AS reactions,
+         COALESCE(attachment_list.items, '[]'::jsonb) AS attachments,
          CASE WHEN m.sender_id = current_member.user_id THEN
            CASE WHEN COALESCE(peer_settings.read_receipts, false)
                       AND peer_member.last_read_seq >= m.created_seq THEN 'seen'
@@ -1010,7 +1061,18 @@ const MESSAGE_SELECT = `
       WHERE r.message_id = m.id
       GROUP BY r.emoji
     ) grouped
-  ) reaction_list ON true`;
+  ) reaction_list ON true
+  LEFT JOIN LATERAL (
+    SELECT jsonb_agg(jsonb_build_object(
+      'id', a.id,
+      'name', a.file_name,
+      'size', a.byte_size,
+      'mimeType', a.mime_type
+    ) ORDER BY ma.position) AS items
+    FROM app.message_attachments ma
+    JOIN app.attachments a ON a.id = ma.attachment_id AND a.status = 'ready'
+    WHERE ma.message_id = m.id
+  ) attachment_list ON true`;
 
 function mapMessage(row: ApiMessageRow): JsonRecord {
   const deleted = row.body_deleted_at !== null;
@@ -1032,7 +1094,7 @@ function mapMessage(row: ApiMessageRow): JsonRecord {
           body: row.reply_body,
         }
       : null,
-    attachments: [],
+    attachments: deleted ? [] : row.attachments ?? [],
     reactions: row.reactions ?? [],
     status: row.delivery_status,
     editedAt: iso(row.edited_at),
@@ -1062,6 +1124,7 @@ function mapConversation(row: QueryResultRow, _userId: string): JsonRecord {
         reply_deleted_at: row.last_reply_deleted_at,
         reply_hidden: row.last_reply_hidden,
         reactions: row.last_reactions,
+        attachments: [],
         delivery_status: row.last_delivery_status,
       } as ApiMessageRow)
     : null;

@@ -136,7 +136,10 @@ Người bị chặn **không nhận sự kiện nào**. Với họ, friendship 
 | `GET /v1/conversations/{id}` | T | → `Conversation` | 401, 404 | — | — | Thành viên, nếu không 404 |
 | `PATCH /v1/conversations/{id}` | T | `{pinned?,muted?}` → `Conversation` | 400, 401, 404 | — | N | Chỉ hàng `conversation_members` của tôi |
 | `GET /v1/conversations/{id}/messages` | T | `?cursor&limit` → `MessagePage` (mới → cũ) | 400, 401, 404 | — | — | Lọc `message_hidden_for` của tôi; tin đã thu hồi trả `body:null, deleted:true` |
-| `POST /v1/conversations/{id}/messages` | T | `{clientMsgId,body,replyToId?,attachments:[]}` → **201** `{message,duplicate}` | 400, 401, **403**, 404, 409, 429 | message-send | C | `app.send_direct_message`: thành viên, bạn bè, block kiểm **trong transaction**. Bị chặn và hết là bạn trả cùng `403 FORBIDDEN` |
+| `POST /v1/attachments` | T | `{fileName,mimeType,size,sha256}` → `{id,uploadUrl,uploadApiKey}` hoặc `{id,alreadyUploaded:true}` | 400, 401, 503 | — | N | Tối đa 100 MiB; URL tải lên có hạn dùng, browser gửi file trực tiếp vào private bucket |
+| `POST /v1/attachments/{id}/complete` | T | → `{id,ready:true}` | 400, 401, 404, 409, 503 | — | N | Chỉ chủ file; xác minh object tồn tại và đúng kích thước trước khi chuyển `pending → ready` |
+| `POST /v1/attachments/download-urls` | T | `{ids}` → `{items:[{id,url,downloadUrl}]}` | 400, 401, 404, 503 | — | — | Chỉ file đã gắn với tin nhắn còn hiệu lực mà tôi có quyền xem; URL có hạn 1 giờ |
+| `POST /v1/conversations/{id}/messages` | T | `{clientMsgId,body,replyToId?,attachments:[id...]}` → **201** `{message,duplicate}` | 400, 401, **403**, 404, 409, 429 | message-send | C | Body có thể rỗng nếu có tệp. Tối đa 20 attachment đã `ready` thuộc người gửi; tạo tin và liên kết attachment trong cùng transaction |
 | `POST .../messages/{mid}/recall` | T | → `Message` | 401, 403, 404, 422 `RECALL_WINDOW_EXPIRED` | — | N | Chỉ người gửi, ≤ 24h theo `created_at` server; seq mới, `kind=recalled`, xóa body |
 | `POST .../messages/{mid}/hide` | T | → 204 | 401, 404 | — | N | `message_hidden_for` + `user_changes(message_visibility)` + `message.hidden` tới các device **của tôi** |
 | `GET /v1/conversations/{id}/changes` | T | `?afterSeq&limit` → `ChangePage` | 400, 401, 404, **410** | — | — | `app.conversation_changes_since`; kèm trạng thái hiện tại của `message` |

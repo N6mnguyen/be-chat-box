@@ -13,6 +13,9 @@ export const GOOGLE_CLIENT_ID = Symbol('GOOGLE_CLIENT_ID');
 export const GOOGLE_FETCH = Symbol('GOOGLE_FETCH');
 export const JWT_SECRET = Symbol('JWT_SECRET');
 
+// Refresh token sống 14 ngày; mỗi lần refresh được cấp token mới (rotate) và gia hạn lại 14 ngày.
+const REFRESH_TTL_MS = 14 * 24 * 60 * 60_000;
+
 interface GoogleProfile {
   sub: string;
   email: string;
@@ -142,7 +145,7 @@ export class GoogleAuthService {
 
       const nextToken = randomBytes(32).toString('base64url');
       const nextId = randomUUID();
-      const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60_000);
+      const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
       await client.query(
         `UPDATE app.refresh_tokens SET consumed_at = now() WHERE id = $1`,
         [token.id],
@@ -230,7 +233,7 @@ export class GoogleAuthService {
     const id = randomUUID();
     const refreshToken = randomBytes(32).toString('base64url');
     const deviceToken = randomBytes(32).toString('base64url');
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60_000);
+    const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
