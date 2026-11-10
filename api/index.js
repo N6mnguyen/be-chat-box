@@ -8,7 +8,14 @@ async function init() {
   if (!DATABASE_URL || !GOOGLE_CLIENT_ID || !JWT_SECRET) {
     throw new Error('DATABASE_URL, GOOGLE_CLIENT_ID, JWT_SECRET are required.');
   }
-  const app = await createApp(new Pool({ connectionString: DATABASE_URL, max: 1 }), GOOGLE_CLIENT_ID, JWT_SECRET);
+  const app = await createApp(new Pool({
+    connectionString: DATABASE_URL,
+    max: 1,
+    connectionTimeoutMillis: 5000,
+    query_timeout: 10000,
+    statement_timeout: 10000,
+    keepAlive: true,
+  }), GOOGLE_CLIENT_ID, JWT_SECRET);
   await app.init();
   return app.getHttpAdapter().getInstance();
 }
