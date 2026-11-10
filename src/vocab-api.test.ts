@@ -53,6 +53,30 @@ test('returns the seeded TOEIC topics and per-topic review counts', async () => 
   assert.equal(overview.summary.dueToday, 0);
 });
 
+test('continues the latest lesson for the authenticated user and language', async () => {
+  const userId = await h.activeUser(`v${randomUUID().slice(0, 8)}`);
+  const otherUserId = await h.activeUser(`v${randomUUID().slice(0, 8)}`);
+  const firstTopicId = 'a1000000-0000-4000-8000-000000000001';
+  const latestTopicId = 'a1000000-0000-4000-8000-000000000002';
+  await h.owner.query(
+    `INSERT INTO app.vocab_study_sessions (user_id, topic_id, mode, word_count, started_at)
+     VALUES
+       ($1, $2, 'flashcard', 10, now() - interval '1 day'),
+       ($1, $3, 'listen_fill', 15, now() - interval '1 hour'),
+       ($4, $2, 'fill_blank', 30, now())`,
+    [userId, firstTopicId, latestTopicId, otherUserId],
+  );
+
+  const overview = await new VocabController(h.app).getOverview(request(userId));
+  assert.equal(overview.summary.continueTopicId, latestTopicId);
+  assert.deepEqual(overview.summary.continueLesson, {
+    topicId: latestTopicId,
+    mode: 'listen_fill',
+    wordCount: 15,
+  });
+  assert.equal(overview.topics.find((topic) => topic.id === latestTopicId)?.language, 'en');
+});
+
 test('seeds all HSK topic groups and grammar courses separately from English', async () => {
   const migration = readFileSync(new URL('../db/migrations/20261110_chinese_vocab.sql', import.meta.url), 'utf8');
   await h.owner.query(migration);

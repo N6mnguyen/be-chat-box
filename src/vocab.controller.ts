@@ -114,7 +114,7 @@ export class VocabController {
       throw validationError();
     }
 
-    const [topicsResult, dueResult, daysResult] = await Promise.all([
+    const [topicsResult, dueResult, daysResult, latestSessionResult] = await Promise.all([
       this.pool.query<VocabTopicRow>(
         `SELECT t.id, t.slug, t.name, t.icon, t.description,
                 t.language, t.level_slug, t.group_slug, t.group_name, t.group_order,
@@ -154,6 +154,19 @@ export class VocabController {
          ORDER BY study_date DESC`,
         [request.userId, language],
       ),
+      this.pool.query<{
+        topic_id: string;
+        mode: 'flashcard' | 'fill_blank' | 'listen_fill';
+        word_count: number;
+      }>(
+        `SELECT s.topic_id, s.mode, s.word_count
+         FROM app.vocab_study_sessions s
+         JOIN app.vocab_topics t ON t.id = s.topic_id
+         WHERE s.user_id = $1 AND t.language = $2
+         ORDER BY s.started_at DESC
+         LIMIT 1`,
+        [request.userId, language],
+      ),
     ]);
 
     const topics = topicsResult.rows.map((row) => ({
@@ -177,7 +190,8 @@ export class VocabController {
     const today = daysResult.rows[0]?.local_today ?? localCalendarDate('Asia/Ho_Chi_Minh');
     const studyDays = new Set(daysResult.rows.map((row) => row.study_date));
     const streak = calculateStreak(studyDays, today);
-    const continueTopic = [...topics]
+    const latestSession = latestSessionResult.rows[0] ?? null;
+    const continueTopic = topics.find((topic) => topic.id === latestSession?.topic_id) ?? [...topics]
       .filter((topic) => topic.learningCount > 0)
       .sort((left, right) => right.learningCount - left.learningCount)[0] ?? null;
 
@@ -187,6 +201,13 @@ export class VocabController {
         streak,
         dueToday: dueResult.rows[0]?.count ?? 0,
         continueTopicId: continueTopic?.id ?? null,
+        continueLesson: latestSession
+          ? {
+              topicId: latestSession.topic_id,
+              mode: latestSession.mode,
+              wordCount: latestSession.word_count,
+            }
+          : null,
       },
     };
   }

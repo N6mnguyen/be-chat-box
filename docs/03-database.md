@@ -49,6 +49,7 @@ erDiagram
 - Dashboard NQuizlet dùng `GET /v1/vocab/stats?days=7|14|30&language=en|zh` (JWT bắt buộc), chỉ truy vấn tiến độ của user/ngôn ngữ trong token. Ngày được tính theo múi giờ hồ sơ (mặc định `Asia/Ho_Chi_Minh`); response gồm chuỗi ngày, tổng hợp tiến độ và 5 từ sai nhiều nhất.
 - Nút ôn từ sai dùng `GET /v1/vocab/review/wrong?language=en|zh` (JWT bắt buộc), trả các từ trả lời sai trong ngày theo múi giờ hồ sơ, kèm chủ đề để mở tiếp bài học đúng bộ từ.
 - `GET /v1/vocab/overview?language=en|zh` lọc catalog, tiến độ và streak theo ngôn ngữ; `GET /v1/vocab/grammar?language=zh&level=hsk1|hsk2|hsk3|hsk4|hsk5|hsk6|hsk7-9` trả nội dung ngữ pháp/kỹ năng theo cấp độ. English là mặc định để tương thích các client cũ.
+- `summary.continueLesson` trong overview chọn chủ đề, chế độ và số từ từ buổi học gần nhất của chính user/ngôn ngữ; nút “Tiếp tục học” mở một buổi mới với cấu hình đó. Tiến độ, đáp án và thống kê của các buổi tiếp tục vẫn gắn với `user_id` từ JWT.
 - Phát âm tiếng Trung dùng `POST /v1/vocab/pronunciation/audio` (JWT bắt buộc), gửi `{ "text": "你好" }` và trả audio `audio/mpeg` qua backend để trình duyệt không cần gọi trực tiếp dịch vụ TTS bên ngoài.
 - Schema riêng `app`, không dùng `public`; Supabase Data API mặc định chỉ expose `public`.
 - Những ràng buộc liên bảng xử lý trong transaction và test: đúng 2 member cho `direct`, quyền bạn bè/chặn, giữ chỗ username.
