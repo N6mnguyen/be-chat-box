@@ -100,16 +100,20 @@ export class GoogleAuthService {
         device_id: string;
         user_id: string;
         user_status: string;
+        user_name: string;
+        user_email: string;
         consumed_at: Date | null;
         revoked_at: Date | null;
         expires_at: Date;
         device_revoked_at: Date | null;
       }>(
         `SELECT rt.id, rt.family_id, rt.device_id, rt.consumed_at, rt.revoked_at, rt.expires_at,
-                d.user_id, d.revoked_at AS device_revoked_at, u.status AS user_status
+                d.user_id, d.revoked_at AS device_revoked_at, u.status AS user_status,
+                COALESCE(u.display_name, i.value) AS user_name, i.value AS user_email
          FROM app.refresh_tokens rt
          JOIN app.devices d ON d.id = rt.device_id
          JOIN app.users u ON u.id = d.user_id
+         JOIN app.identities i ON i.user_id = u.id AND i.type = 'email'
          WHERE rt.token_hash = $1 AND rt.pepper_version = 'v1'
          FOR UPDATE OF rt, d, u`,
         [currentHash],
@@ -164,12 +168,11 @@ export class GoogleAuthService {
       await client.query('COMMIT');
       transactionOpen = false;
 
-      const user = await this.getAuthUser(token.user_id);
       return {
         ...this.accessToken(token.user_id, token.device_id),
         refreshToken: nextToken,
         refreshExpiresAt: expiresAt.toISOString(),
-        user,
+        user: { name: token.user_name, email: token.user_email },
       };
     } catch (error) {
       if (transactionOpen) {

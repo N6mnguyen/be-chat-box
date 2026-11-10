@@ -168,7 +168,7 @@ test('links only an existing verified email identity', async () => {
   );
 });
 
-test('rotates refresh tokens and revokes a reused token family', async () => {
+test('rotates refresh tokens without acquiring a second pool connection and revokes reused families', async () => {
   const service = new GoogleAuthService(
     h.app,
     CLIENT_ID,
@@ -179,16 +179,36 @@ test('rotates refresh tokens and revokes a reused token family', async () => {
     }) as typeof fetch,
   );
   const first = await service.exchange('mock-google-access-token');
-  const second = await service.refresh(first.refreshToken);
+  const singleConnectionPool = new Proxy(h.app, {
+    get(target, property) {
+      if (property === 'query') {
+        return () => {
+          throw new Error('Refresh must not acquire a second pooled connection.');
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const refreshService = new GoogleAuthService(
+    singleConnectionPool,
+    CLIENT_ID,
+    JWT_SECRET,
+    mockGoogleFetch({
+      sub: 'google-refresh-001',
+      email: 'refresh.user@example.com',
+    }) as typeof fetch,
+  );
+  const second = await refreshService.refresh(first.refreshToken);
   assert.notEqual(second.refreshToken, first.refreshToken);
   assert.equal(second.user.email, 'refresh.user@example.com');
 
   await assert.rejects(
-    service.refresh(first.refreshToken),
+    refreshService.refresh(first.refreshToken),
     (error: unknown) => error instanceof HttpException && error.getStatus() === 401,
   );
   await assert.rejects(
-    service.refresh(second.refreshToken),
+    refreshService.refresh(second.refreshToken),
     (error: unknown) => error instanceof HttpException && error.getStatus() === 401,
   );
 });

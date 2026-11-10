@@ -120,10 +120,10 @@ Các giá trị đề xuất, cấu hình được; job chạy hằng ngày, the
 
 | Biến | Role | Chế độ | Pool/driver |
 |---|---|---|---|
-| `DATABASE_URL` | `vchat_app` | Transaction pooler, cổng 6543 | `postgres(url, { prepare: false, max: 10 })`; `?pgbouncer=true` chỉ Prisma đọc, driver này bỏ qua |
+| `DATABASE_URL` | `vchat_app` | Transaction pooler, cổng 6543 | Node `pg.Pool`; Vercel serverless `max: 5`, local `max: 10`; Vercel region `hnd1` gần DB Tokyo |
 | `DIRECT_URL` | `postgres` | Session pooler 5432 hoặc direct khi có IPv6 | Chỉ dùng migration, một lần/deploy |
 
-Chỉ dùng `pg_advisory_xact_lock`, không `LISTEN/NOTIFY` hoặc session lock. `max:10` là giá trị khởi điểm; kiểm tra giới hạn kết nối theo gói Supabase. Mật khẩu chỉ trong secret store/env, không vào repo/log.
+Chỉ dùng `pg_advisory_xact_lock`, không `LISTEN/NOTIFY` hoặc session lock. Pool Vercel được giới hạn ở 5 kết nối để tránh tuần tự hóa các request đồng thời trong một instance; điều chỉnh theo tải và giới hạn kết nối của gói Supabase. Mật khẩu chỉ trong secret store/env, không vào repo/log.
 
 ### Kết nối API local tới Supabase
 

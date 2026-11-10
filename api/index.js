@@ -10,7 +10,7 @@ async function init() {
   }
   const app = await createApp(new Pool({
     connectionString: DATABASE_URL,
-    max: 1,
+    max: 5,
     connectionTimeoutMillis: 5000,
     query_timeout: 10000,
     statement_timeout: 10000,
