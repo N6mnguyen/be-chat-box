@@ -10,7 +10,11 @@ import { signAccessToken } from './google-auth.service.js';
 
 const SECRET = 'chat_api_test_jwt_secret_that_is_long_enough_123';
 
-before(setup, { timeout: 120_000 });
+before(async () => {
+  await setup();
+  await h.owner.query(readFileSync(new URL('../db/migrations/20261110_vocab.sql', import.meta.url), 'utf8'));
+  await h.owner.query(readFileSync(new URL('../db/migrations/20261110_nquizlet.sql', import.meta.url), 'utf8'));
+}, { timeout: 120_000 });
 after(teardown);
 
 function request(userId: string): AuthenticatedRequest {

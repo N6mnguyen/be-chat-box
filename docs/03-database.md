@@ -44,6 +44,8 @@ erDiagram
 - [schema.sql](../db/schema.sql): bảng, PK/FK/CHECK/index, `unique(conversation_id, created_seq)`, `unique(conversation_id, client_msg_id)`, hàm cấp seq, cursor, dọn change log và claim/complete/fail job.
 - [roles.sql](../db/roles.sql): role `vchat_app`, GRANT, RLS.
 - `google_identities` lưu Google `sub` duy nhất và liên kết với user; migration cho DB đã tồn tại: [20261028_google_identities.sql](../db/migrations/20261028_google_identities.sql).
+- Từ vựng NChat: [20261110_vocab.sql](../db/migrations/20261110_vocab.sql) tạo bảng tiến độ/bài học, seed 90 từ gốc thuộc ba chủ đề, lưu từng câu trả lời và hỗ trợ điểm lẻ khi dùng gợi ý. Với DB mới, `db:supabase:init` cũng áp dụng migration này; DB hiện có cần chạy migration bằng role sở hữu.
+- Kết quả học trong chat: [20261110_nquizlet.sql](../db/migrations/20261110_nquizlet.sql) seed tài khoản bot NQuizlet, thêm `users.is_bot` và lưu tin `study_result` có payload JSON cùng fallback text. API `/v1/vocab/study-result` chỉ chấp nhận session đã hoàn tất của người dùng đang xác thực; `study_session_id` unique giúp gửi lại an toàn. DB mới áp dụng migration qua `db:supabase:init`; DB hiện có cần chạy migration sau migration từ vựng.
 - Schema riêng `app`, không dùng `public`; Supabase Data API mặc định chỉ expose `public`.
 - Những ràng buộc liên bảng xử lý trong transaction và test: đúng 2 member cho `direct`, quyền bạn bè/chặn, giữ chỗ username.
 - **File đính kèm dời khỏi MVP đợt đầu.** Giữ `attachments`, `message_attachments` và interface `StorageService` làm chỗ cắm; API chưa bật. Đây là hạng mục đầu tiên sau MVP.

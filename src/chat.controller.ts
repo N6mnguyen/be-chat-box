@@ -45,6 +45,9 @@ interface ApiMessageRow extends QueryResultRow {
   reply_hidden: boolean;
   reactions: Array<{ emoji: string; count: number; mine: boolean }> | null;
   attachments: Array<{ id: string; name: string; size: number; mimeType: string }> | null;
+  message_type: 'text' | 'study_result';
+  structured_payload: Record<string, unknown> | null;
+  sender_is_bot: boolean;
   delivery_status: 'sent' | 'delivered' | 'seen';
 }
 
@@ -110,6 +113,7 @@ export class ChatController {
               cm.last_delivered_seq::text, cm.last_read_seq::text,
               peer.id AS peer_id, peer.username AS peer_username,
               peer.display_name AS peer_display_name, peer.status AS peer_status,
+              peer.is_bot AS peer_is_bot,
               pcm.last_delivered_seq::text AS peer_delivered_seq,
               CASE WHEN ps.read_receipts THEN pcm.last_read_seq::text ELSE NULL END AS peer_read_seq,
               COALESCE(unread.total, 0)::int AS unread_count,
@@ -118,6 +122,8 @@ export class ChatController {
               lm.body AS last_body, lm.body_deleted_at AS last_deleted_at,
               lm.edited_at AS last_edited_at, lm.created_at AS last_created_at,
               lm.updated_at AS last_updated_at, lm.sender_name AS last_sender_name,
+              lm.message_type AS last_message_type, lm.structured_payload AS last_structured_payload,
+              lm.sender_is_bot AS last_sender_is_bot,
               lm.reply_to_id AS last_reply_to_id, lm.reply_sender_id AS last_reply_sender_id,
               lm.reply_body AS last_reply_body, lm.reply_deleted_at AS last_reply_deleted_at,
               lm.reply_hidden AS last_reply_hidden, lm.reactions AS last_reactions,
@@ -594,7 +600,8 @@ export class ChatController {
     const result = await this.pool.query(
       `SELECT u.id, u.username, u.display_name
        FROM app.users u JOIN app.user_settings s ON s.user_id = u.id
-       WHERE u.username = lower($1) AND u.status = 'active' AND s.discoverable = 'everyone'
+       WHERE u.username = lower($1) AND u.status = 'active' AND NOT u.is_bot
+         AND s.discoverable = 'everyone'
          AND NOT EXISTS (SELECT 1 FROM app.user_blocks b
                          WHERE (b.blocker_id = u.id AND b.blocked_id = $2)
                             OR (b.blocker_id = $2 AND b.blocked_id = u.id))`,
@@ -622,7 +629,7 @@ export class ChatController {
       `SELECT u.id, u.username, u.display_name
        FROM app.users u
        JOIN app.user_settings s ON s.user_id = u.id
-       WHERE u.status = 'active' AND u.username IS NOT NULL
+       WHERE u.status = 'active' AND u.username IS NOT NULL AND NOT u.is_bot
          AND u.id <> $1 AND s.discoverable = 'everyone'
          AND ($3::text = '' OR position($3::text in lower(u.username)) > 0
            OR position($3::text in lower(COALESCE(u.display_name, ''))) > 0)
@@ -790,7 +797,7 @@ export class ChatController {
       `SELECT u.id, u.username, u.display_name, f.created_at
        FROM app.friendships f JOIN app.users u
          ON u.id = CASE WHEN f.user_low = $1 THEN f.user_high ELSE f.user_low END
-       WHERE $1 IN (f.user_low, f.user_high) AND u.status = 'active'
+       WHERE $1 IN (f.user_low, f.user_high) AND u.status = 'active' AND NOT u.is_bot
        ORDER BY f.created_at DESC, u.id OFFSET $2 LIMIT $3`,
       [request.userId, offset, limit + 1],
     );
@@ -863,6 +870,7 @@ export class ChatController {
               cm.last_delivered_seq::text, cm.last_read_seq::text,
               peer.id AS peer_id, peer.username AS peer_username,
               peer.display_name AS peer_display_name, peer.status AS peer_status,
+              peer.is_bot AS peer_is_bot,
               pcm.last_delivered_seq::text AS peer_delivered_seq,
               CASE WHEN ps.read_receipts THEN pcm.last_read_seq::text ELSE NULL END AS peer_read_seq,
               COALESCE(unread.total, 0)::int AS unread_count,
@@ -871,6 +879,8 @@ export class ChatController {
               lm.body AS last_body, lm.body_deleted_at AS last_deleted_at,
               lm.edited_at AS last_edited_at, lm.created_at AS last_created_at,
               lm.updated_at AS last_updated_at, lm.sender_name AS last_sender_name,
+              lm.message_type AS last_message_type, lm.structured_payload AS last_structured_payload,
+              lm.sender_is_bot AS last_sender_is_bot,
               lm.reply_to_id AS last_reply_to_id, lm.reply_sender_id AS last_reply_sender_id,
               lm.reply_body AS last_reply_body, lm.reply_deleted_at AS last_reply_deleted_at,
               lm.reply_hidden AS last_reply_hidden, lm.reactions AS last_reactions,
@@ -907,7 +917,8 @@ export class ChatController {
     try {
       await client.query('BEGIN');
       const peer = await client.query<{ id: string }>(
-        `SELECT id FROM app.users WHERE username = lower($1) AND status = 'active'`,
+        `SELECT id FROM app.users
+         WHERE username = lower($1) AND status = 'active' AND NOT is_bot`,
         [username],
       );
       if (peer.rowCount) {
@@ -1021,7 +1032,8 @@ export class ChatController {
 const MESSAGE_SELECT = `
   SELECT m.id, m.conversation_id, m.sender_id, m.client_msg_id,
          m.created_seq::text, m.latest_seq::text, m.body, m.body_deleted_at,
-         m.edited_at, m.created_at, m.updated_at,
+         m.edited_at, m.created_at, m.updated_at, m.message_type, m.structured_payload,
+         sender.is_bot AS sender_is_bot,
          COALESCE(sender.display_name, sender.username, email.value, 'Tài khoản đã xóa') AS sender_name,
          m.reply_to_id, reply.sender_id AS reply_sender_id,
          CASE WHEN reply.body_deleted_at IS NULL AND NOT COALESCE(reply_hidden.hidden, false)
@@ -1081,10 +1093,13 @@ function mapMessage(row: ApiMessageRow): JsonRecord {
     conversationId: row.conversation_id,
     senderId: row.sender_id,
     senderName: row.sender_name,
+    senderIsBot: row.sender_is_bot,
     clientMsgId: row.client_msg_id,
     createdSeq: row.created_seq,
     latestSeq: row.latest_seq,
     body: deleted ? null : row.body,
+    type: row.message_type,
+    structuredPayload: deleted ? null : row.structured_payload,
     deleted,
     replyTo: row.reply_to_id
       ? {
@@ -1118,6 +1133,9 @@ function mapConversation(row: QueryResultRow, _userId: string): JsonRecord {
         created_at: row.last_created_at,
         updated_at: row.last_updated_at,
         sender_name: row.last_sender_name,
+        message_type: row.last_message_type,
+        structured_payload: row.last_structured_payload,
+        sender_is_bot: row.last_sender_is_bot,
         reply_to_id: row.last_reply_to_id,
         reply_sender_id: row.last_reply_sender_id,
         reply_body: row.last_reply_body,
@@ -1133,7 +1151,12 @@ function mapConversation(row: QueryResultRow, _userId: string): JsonRecord {
     id: row.id,
     type: 'direct',
     peer: peerExists
-      ? { id: row.peer_id, username: row.peer_username, displayName: row.peer_display_name }
+      ? {
+          id: row.peer_id,
+          username: row.peer_username,
+          displayName: row.peer_display_name,
+          isBot: row.peer_is_bot ?? false,
+        }
       : null,
     peerDeleted: !peerExists,
     lastSeq: row.last_seq,
