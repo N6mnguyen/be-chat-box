@@ -44,14 +44,20 @@ try {
   const schema = await readFile(new URL('./schema.sql', import.meta.url), 'utf8');
   const roles = await readFile(new URL('./roles.sql', import.meta.url), 'utf8');
   const vocab = await readFile(new URL('./migrations/20261110_vocab.sql', import.meta.url), 'utf8');
+  const toeicBusinessTopics = await readFile(new URL('./migrations/20261110_toeic_business_topics.sql', import.meta.url), 'utf8');
+  const toeicTopicsCatalog = await readFile(new URL('./migrations/20261110_toeic_topics_catalog.sql', import.meta.url), 'utf8');
   const nquizlet = await readFile(new URL('./migrations/20261110_nquizlet.sql', import.meta.url), 'utf8');
+  const chineseVocab = await readFile(new URL('./migrations/20261110_chinese_vocab.sql', import.meta.url), 'utf8');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query(schema);
     await client.query(roles);
     await client.query(vocab);
+    await client.query(toeicBusinessTopics);
+    await client.query(toeicTopicsCatalog);
     await client.query(nquizlet);
+    await client.query(chineseVocab);
     const passwordStatement = await client.query(
       "SELECT format('ALTER ROLE vchat_app PASSWORD %L', $1::text) AS statement",
       [appPassword],

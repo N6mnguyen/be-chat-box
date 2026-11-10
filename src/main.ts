@@ -115,7 +115,10 @@ async function prepareEmbeddedDatabase(): Promise<EmbeddedDatabase> {
     await owner.query(await readFile(new URL('../db/schema.sql', import.meta.url), 'utf8'));
     await owner.query(await readFile(new URL('../db/roles.sql', import.meta.url), 'utf8'));
     await owner.query(await readFile(new URL('../db/migrations/20261110_vocab.sql', import.meta.url), 'utf8'));
+    await owner.query(await readFile(new URL('../db/migrations/20261110_toeic_business_topics.sql', import.meta.url), 'utf8'));
+    await owner.query(await readFile(new URL('../db/migrations/20261110_toeic_topics_catalog.sql', import.meta.url), 'utf8'));
     await owner.query(await readFile(new URL('../db/migrations/20261110_nquizlet.sql', import.meta.url), 'utf8'));
+    await owner.query(await readFile(new URL('../db/migrations/20261110_chinese_vocab.sql', import.meta.url), 'utf8'));
     const appPassword = randomBytes(32).toString('hex');
     const roleStatement = await owner.query<{ statement: string }>(
       "SELECT format('ALTER ROLE vchat_app PASSWORD %L', $1::text) AS statement",

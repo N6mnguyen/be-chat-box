@@ -7,12 +7,16 @@ import {
   Inject,
   Param,
   Post,
+  Query,
+  Res,
   Req,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { Pool, QueryResultRow } from 'pg';
+import type { Response as ExpressResponse } from 'express';
 import { createHash, randomUUID } from 'node:crypto';
+import { getAudioUrl } from 'google-tts-api';
 import { AppJwtGuard, AuthenticatedRequest } from './app-jwt.guard.js';
 import { PG_POOL } from './google-auth.service.js';
 import { RealtimeInterceptor } from './realtime.interceptor.js';
@@ -23,14 +27,59 @@ interface VocabTopicRow extends QueryResultRow {
   name: string;
   icon: string;
   description: string;
+  language: 'en' | 'zh';
+  level_slug: string | null;
+  group_slug: string;
+  group_name: string;
+  group_order: number;
   word_count: number;
   mastered_count: number;
   learning_count: number;
+  due_count: number;
+}
+
+interface GrammarCourseRow extends QueryResultRow {
+  level_slug: string;
+  title: string;
+  proficiency: string;
+  grammar_items: Array<{ title: string; explanation: string }>;
+  skills: string[];
+  display_order: number;
 }
 
 interface StudyDayRow extends QueryResultRow {
   study_date: string;
   local_today: string;
+}
+
+interface StatsDayRow extends QueryResultRow {
+  study_date: string;
+  local_today: string;
+  sessions: number;
+  words: number;
+  correct: number;
+  total: number;
+  minutes: number;
+}
+
+interface WrongStatsRow extends QueryResultRow {
+  word: string;
+  meaning_vi: string;
+  wrong_count: number;
+}
+
+interface WrongReviewRow extends QueryResultRow {
+  id: string;
+  topic_id: string;
+  topic: string;
+  language: 'en' | 'zh';
+  word: string;
+  phonetic: string;
+  meaning_vi: string;
+  example_en: string;
+  audio_url: string | null;
+  user_answer: string;
+  answered_at: Date;
 }
 
 interface VocabWordRow extends QueryResultRow {
@@ -40,6 +89,7 @@ interface VocabWordRow extends QueryResultRow {
   part_of_speech: string;
   meaning_vi: string;
   example_en: string;
+  example_target: string;
   example_vi: string;
   audio_url: string | null;
   alternative_answers: string[];
@@ -55,37 +105,54 @@ export class VocabController {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
   @Get('overview')
-  async getOverview(@Req() request: AuthenticatedRequest) {
+  async getOverview(
+    @Req() request: AuthenticatedRequest,
+    @Query('language') languageInput?: string,
+  ) {
+    const language = parseVocabLanguage(languageInput);
+    if (language === null) {
+      throw validationError();
+    }
+
     const [topicsResult, dueResult, daysResult] = await Promise.all([
       this.pool.query<VocabTopicRow>(
         `SELECT t.id, t.slug, t.name, t.icon, t.description,
+                t.language, t.level_slug, t.group_slug, t.group_name, t.group_order,
                 COUNT(w.id)::int AS word_count,
                 COUNT(w.id) FILTER (WHERE p.status = 'mastered')::int AS mastered_count,
-                COUNT(w.id) FILTER (WHERE p.status = 'learning')::int AS learning_count
+                COUNT(w.id) FILTER (WHERE p.status = 'learning')::int AS learning_count,
+                COUNT(w.id) FILTER (
+                  WHERE p.status <> 'new' AND p.next_review_at <= now()
+                )::int AS due_count
          FROM app.vocab_topics t
-         JOIN app.vocab_words w ON w.topic_id = t.id
+         LEFT JOIN app.vocab_words w ON w.topic_id = t.id
          LEFT JOIN app.vocab_user_word_progress p
            ON p.word_id = w.id AND p.user_id = $1
+         WHERE t.language = $2
          GROUP BY t.id
-         ORDER BY t.display_order`,
-        [request.userId],
+         ORDER BY t.group_order, t.display_order`,
+        [request.userId, language],
       ),
       this.pool.query<{ count: number }>(
         `SELECT COUNT(*)::int AS count
-         FROM app.vocab_user_word_progress
-         WHERE user_id = $1 AND status <> 'new' AND next_review_at <= now()`,
-        [request.userId],
+         FROM app.vocab_user_word_progress p
+         JOIN app.vocab_words w ON w.id = p.word_id
+         JOIN app.vocab_topics t ON t.id = w.topic_id
+         WHERE p.user_id = $1 AND t.language = $2
+           AND p.status <> 'new' AND p.next_review_at <= now()`,
+        [request.userId, language],
       ),
       this.pool.query<StudyDayRow>(
-        `SELECT d.study_date::text AS study_date,
-                (now() AT TIME ZONE COALESCE(s.timezone, 'Asia/Ho_Chi_Minh'))::date::text AS local_today
-         FROM app.vocab_daily_stats d
-         LEFT JOIN app.vocab_user_settings s ON s.user_id = d.user_id
-         WHERE d.user_id = $1
-           AND d.study_date >=
-             (now() AT TIME ZONE COALESCE(s.timezone, 'Asia/Ho_Chi_Minh'))::date - 365
-         ORDER BY d.study_date DESC`,
-        [request.userId],
+        `SELECT DISTINCT
+                (s.finished_at AT TIME ZONE COALESCE(settings.timezone, 'Asia/Ho_Chi_Minh'))::date::text AS study_date,
+                (now() AT TIME ZONE COALESCE(settings.timezone, 'Asia/Ho_Chi_Minh'))::date::text AS local_today
+         FROM app.vocab_study_sessions s
+         JOIN app.vocab_topics t ON t.id = s.topic_id
+         LEFT JOIN app.vocab_user_settings settings ON settings.user_id = s.user_id
+         WHERE s.user_id = $1 AND t.language = $2
+           AND s.finished_at >= now() - interval '366 days'
+         ORDER BY study_date DESC`,
+        [request.userId, language],
       ),
     ]);
 
@@ -95,9 +162,15 @@ export class VocabController {
       name: row.name,
       icon: row.icon,
       description: row.description,
+      language: row.language,
+      levelSlug: row.level_slug,
+      groupSlug: row.group_slug,
+      groupName: row.group_name,
+      groupOrder: row.group_order,
       wordCount: row.word_count,
       masteredCount: row.mastered_count,
       learningCount: row.learning_count,
+      dueCount: row.due_count,
       progressPercent: row.word_count === 0 ? 0 : Math.round((row.mastered_count / row.word_count) * 100),
     }));
 
@@ -118,6 +191,265 @@ export class VocabController {
     };
   }
 
+  @Get('grammar')
+  async getGrammar(
+    @Query('language') languageInput?: string,
+    @Query('level') levelInput?: string,
+  ) {
+    const language = parseVocabLanguage(languageInput);
+    if (language === null || (levelInput !== undefined && !isVocabLevel(levelInput))) {
+      throw validationError();
+    }
+    const result = await this.pool.query<GrammarCourseRow>(
+      `SELECT level_slug, title, proficiency, grammar_items, skills, display_order
+       FROM app.vocab_grammar_courses
+       WHERE language = $1 AND ($2::text IS NULL OR level_slug = $2)
+       ORDER BY display_order`,
+      [language, levelInput ?? null],
+    );
+    return {
+      courses: result.rows.map((row) => ({
+        level: row.level_slug,
+        title: row.title,
+        proficiency: row.proficiency,
+        grammarItems: row.grammar_items,
+        skills: row.skills,
+      })),
+    };
+  }
+
+  @Post('pronunciation')
+  getPronunciation(@Body() body: unknown) {
+    const input = requestRecord(body);
+    if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 200) {
+      throw validationError();
+    }
+
+    return {
+      audioUrl: getAudioUrl(input.text.trim(), { lang: 'zh-CN' }),
+    };
+  }
+
+  @Post('pronunciation/audio')
+  async getPronunciationAudio(@Body() body: unknown, @Res() response: ExpressResponse): Promise<void> {
+    const input = requestRecord(body);
+    if (typeof input.text !== 'string' || !input.text.trim() || input.text.length > 200) {
+      throw validationError();
+    }
+
+    let upstream: globalThis.Response;
+    try {
+      upstream = await fetch(getAudioUrl(input.text.trim(), { lang: 'zh-CN' }));
+    } catch (error) {
+      console.error('Không kết nối được dịch vụ phát âm tiếng Trung', error);
+      throw apiError(HttpStatus.BAD_GATEWAY, 'PRONUNCIATION_UNAVAILABLE', 'Dịch vụ phát âm tiếng Trung hiện không khả dụng.');
+    }
+    if (!upstream.ok || !upstream.headers.get('content-type')?.includes('audio')) {
+      console.error('Dịch vụ phát âm tiếng Trung trả về phản hồi không hợp lệ', {
+        status: upstream.status,
+        contentType: upstream.headers.get('content-type'),
+      });
+      throw apiError(HttpStatus.BAD_GATEWAY, 'PRONUNCIATION_UNAVAILABLE', 'Dịch vụ phát âm tiếng Trung hiện không khả dụng.');
+    }
+
+    const audio = Buffer.from(await upstream.arrayBuffer());
+    if (!audio.length) {
+      throw apiError(HttpStatus.BAD_GATEWAY, 'PRONUNCIATION_UNAVAILABLE', 'Dịch vụ phát âm không trả về dữ liệu âm thanh.');
+    }
+    response
+      .status(HttpStatus.OK)
+      .type('audio/mpeg')
+      .set('Cache-Control', 'private, max-age=3600')
+      .send(audio);
+  }
+
+  @Get('stats')
+  async getStats(
+    @Req() request: AuthenticatedRequest,
+    @Query('days') daysInput: string,
+    @Query('language') languageInput?: string,
+  ) {
+    const days = parseStatsDays(daysInput);
+    const language = parseVocabLanguage(languageInput);
+    if (days === null || language === null) {
+      throw validationError();
+    }
+
+    const rangeResult = await this.pool.query<StatsDayRow>(
+      `WITH user_clock AS (
+         SELECT COALESCE(
+           (SELECT timezone FROM app.vocab_user_settings WHERE user_id = $1),
+           'Asia/Ho_Chi_Minh'
+         ) AS timezone
+       ), bounds AS (
+         SELECT timezone,
+                (now() AT TIME ZONE timezone)::date AS today,
+                (now() AT TIME ZONE timezone)::date - ($2::int * 2 - 1) AS first_day
+         FROM user_clock
+       ), calendar AS (
+         SELECT b.today, b.first_day, series.study_date::date AS study_date
+         FROM bounds b
+         CROSS JOIN LATERAL generate_series(
+           b.first_day::timestamp,
+           b.today::timestamp,
+           interval '1 day'
+         ) AS series(study_date)
+       )
+       SELECT c.study_date::text AS study_date,
+              c.today::text AS local_today,
+              COALESCE(d.sessions, 0)::int AS sessions,
+              COALESCE(d.words, 0)::int AS words,
+              COALESCE(d.correct, 0)::float AS correct,
+              COALESCE(d.total, 0)::int AS total,
+              COALESCE(d.minutes, 0)::int AS minutes
+       FROM calendar c
+       LEFT JOIN app.vocab_daily_stats d
+         ON d.user_id = $1 AND d.study_date = c.study_date AND d.language = $3
+       ORDER BY c.study_date`,
+      [request.userId, days, language],
+    );
+    const [reviewResult, historyResult] = await Promise.all([
+      this.pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count
+         FROM app.vocab_user_word_progress p
+         JOIN app.vocab_words w ON w.id = p.word_id
+         JOIN app.vocab_topics t ON t.id = w.topic_id
+         WHERE p.user_id = $1 AND t.language = $2
+           AND p.status <> 'new' AND p.next_review_at <= now()`,
+        [request.userId, language],
+      ),
+      this.pool.query<StudyDayRow>(
+        `SELECT DISTINCT
+                (session.finished_at AT TIME ZONE COALESCE(settings.timezone, 'Asia/Ho_Chi_Minh'))::date::text AS study_date,
+                (now() AT TIME ZONE COALESCE(settings.timezone, 'Asia/Ho_Chi_Minh'))::date::text AS local_today
+         FROM app.vocab_study_sessions session
+         JOIN app.vocab_topics topic ON topic.id = session.topic_id
+         LEFT JOIN app.vocab_user_settings settings ON settings.user_id = session.user_id
+         WHERE session.user_id = $1 AND topic.language = $2
+           AND session.finished_at >= now() - interval '366 days'
+         ORDER BY study_date DESC`,
+        [request.userId, language],
+      ),
+    ]);
+
+    const allDays = rangeResult.rows;
+    const today = rangeResult.rows[0]?.local_today ?? localCalendarDate('Asia/Ho_Chi_Minh');
+    const firstCurrentDay = addCalendarDays(today, -(days - 1));
+    const currentRows = allDays.filter((row) => row.study_date >= firstCurrentDay);
+    const previousRows = allDays.filter((row) => row.study_date < firstCurrentDay);
+    const totalWords = currentRows.reduce((sum, row) => sum + row.words, 0);
+    const correct = currentRows.reduce((sum, row) => sum + row.correct, 0);
+    const total = currentRows.reduce((sum, row) => sum + row.total, 0);
+    const previousWords = previousRows.reduce((sum, row) => sum + row.words, 0);
+    const deltaVsPreviousPercent = previousWords === 0
+      ? (totalWords > 0 ? 100 : 0)
+      : Math.round(((totalWords - previousWords) / previousWords) * 100);
+    const studyDays = new Set(historyResult.rows.map((row) => row.study_date));
+    const dailyStats = currentRows.map((row) => ({
+      date: row.study_date,
+      sessions: row.sessions,
+      wordsStudied: row.words,
+      avgScorePercent: row.total === 0 ? 0 : Math.round((row.correct / row.total) * 100),
+      studyMinutes: row.minutes,
+    }));
+
+    const firstDay = addCalendarDays(today, -(days - 1));
+    const wrongWordsResult = await this.pool.query<WrongStatsRow>(
+      `SELECT w.word, w.meaning_vi, COUNT(*)::int AS wrong_count
+       FROM app.vocab_session_answers a
+       JOIN app.vocab_study_sessions s ON s.id = a.session_id AND s.user_id = a.user_id
+       JOIN app.vocab_words w ON w.id = a.word_id
+       JOIN app.vocab_topics t ON t.id = w.topic_id
+       LEFT JOIN app.vocab_user_settings settings ON settings.user_id = a.user_id
+       WHERE a.user_id = $1
+         AND t.language = $4
+         AND NOT a.is_correct
+         AND s.finished_at IS NOT NULL
+         AND (s.finished_at AT TIME ZONE COALESCE(settings.timezone, 'Asia/Ho_Chi_Minh'))::date
+             BETWEEN $2::date AND $3::date
+       GROUP BY w.id
+       ORDER BY wrong_count DESC, w.word
+       LIMIT 5`,
+      [request.userId, firstDay, today, language],
+    );
+
+    return {
+      days,
+      language,
+      daily: dailyStats,
+      summary: {
+        totalWords,
+        avgScore: total === 0 ? 0 : Math.round((correct / total) * 100),
+        streak: calculateStreak(studyDays, today),
+        dueToday: reviewResult.rows[0]?.count ?? 0,
+        deltaVsPreviousPercent,
+      },
+      topWrongWords: wrongWordsResult.rows.map((row) => ({
+        word: row.word,
+        meaningVi: row.meaning_vi,
+        wrongCount: row.wrong_count,
+      })),
+    };
+  }
+
+  @Get('review/wrong')
+  async getWrongReview(
+    @Req() request: AuthenticatedRequest,
+    @Query('language') languageInput?: string,
+  ) {
+    const language = parseVocabLanguage(languageInput);
+    if (language === null) {
+      throw validationError();
+    }
+
+    const result = await this.pool.query<WrongReviewRow>(
+      `WITH user_clock AS (
+         SELECT COALESCE(
+           (SELECT timezone FROM app.vocab_user_settings WHERE user_id = $1),
+           'Asia/Ho_Chi_Minh'
+         ) AS timezone
+       ), today AS (
+         SELECT timezone, (now() AT TIME ZONE timezone)::date AS local_date
+         FROM user_clock
+       )
+       SELECT DISTINCT ON (w.id)
+              w.id, t.id AS topic_id, t.name AS topic, t.language,
+              w.word, w.phonetic, w.meaning_vi, w.example_en,
+              COALESCE(w.example_target, w.example_en) AS example_target, w.audio_url,
+              a.user_answer, a.answered_at
+       FROM app.vocab_session_answers a
+       JOIN app.vocab_study_sessions s ON s.id = a.session_id AND s.user_id = a.user_id
+       JOIN app.vocab_words w ON w.id = a.word_id
+       JOIN app.vocab_topics t ON t.id = w.topic_id
+       CROSS JOIN today
+       WHERE a.user_id = $1
+         AND t.language = $2
+         AND NOT a.is_correct
+         AND s.finished_at IS NOT NULL
+         AND (a.answered_at AT TIME ZONE today.timezone)::date = today.local_date
+       ORDER BY w.id, a.answered_at DESC`,
+      [request.userId, language],
+    );
+
+    return {
+      words: result.rows
+        .sort((left, right) => right.answered_at.getTime() - left.answered_at.getTime())
+        .map((row) => ({
+          id: row.id,
+          topicId: row.topic_id,
+          topic: row.topic,
+          language: row.language,
+          word: row.word,
+          phonetic: row.phonetic,
+          meaningVi: row.meaning_vi,
+          exampleEn: row.example_en,
+          exampleTarget: row.example_target,
+          audioUrl: row.audio_url,
+          userAnswer: row.user_answer,
+        })),
+    };
+  }
+
   @Post('sessions')
   async startSession(@Req() request: AuthenticatedRequest, @Body() body: unknown) {
     const input = requestRecord(body);
@@ -132,8 +464,14 @@ export class VocabController {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const topic = await client.query<{ id: string; name: string }>(
-        'SELECT id, name FROM app.vocab_topics WHERE id = $1',
+      const topic = await client.query<{
+        id: string;
+        name: string;
+        language: 'en' | 'zh';
+        level_slug: string | null;
+        group_name: string;
+      }>(
+        'SELECT id, name, language, level_slug, group_name FROM app.vocab_topics WHERE id = $1',
         [input.topicId],
       );
       if (!topic.rowCount) {
@@ -143,7 +481,8 @@ export class VocabController {
       const sessionId = randomUUID();
       const words = await client.query<VocabWordRow>(
         `SELECT w.id, w.word, w.phonetic, w.part_of_speech, w.meaning_vi,
-                w.example_en, w.example_vi, w.audio_url, w.alternative_answers
+                w.example_en, COALESCE(w.example_target, w.example_en) AS example_target,
+                w.example_vi, w.audio_url, w.alternative_answers
          FROM app.vocab_words w
          LEFT JOIN app.vocab_user_word_progress p
            ON p.word_id = w.id AND p.user_id = $1
@@ -173,6 +512,9 @@ export class VocabController {
         sessionId,
         topicId: topic.rows[0].id,
         topic: topic.rows[0].name,
+        language: topic.rows[0].language,
+        level: topic.rows[0].level_slug,
+        groupName: topic.rows[0].group_name,
         mode,
         wordCount,
         startedAt: created.rows[0].started_at.toISOString(),
@@ -183,6 +525,7 @@ export class VocabController {
           partOfSpeech: row.part_of_speech,
           meaningVi: row.meaning_vi,
           exampleEn: row.example_en,
+          exampleTarget: row.example_target,
           exampleVi: row.example_vi,
           audioUrl: row.audio_url,
           alternativeAnswers: row.alternative_answers,
@@ -389,14 +732,15 @@ export class VocabController {
         completed = update.rows[0];
         await client.query(
           `INSERT INTO app.vocab_daily_stats
-             (user_id, study_date, sessions, words, correct, total, minutes)
+             (user_id, study_date, language, sessions, words, correct, total, minutes)
            SELECT s.user_id,
                   (now() AT TIME ZONE COALESCE(settings.timezone, 'Asia/Ho_Chi_Minh'))::date,
-                  1, s.word_count, s.score, s.total_questions, floor(s.duration_sec / 60.0)::int
+                  t.language, 1, s.word_count, s.score, s.total_questions, floor(s.duration_sec / 60.0)::int
            FROM app.vocab_study_sessions s
+           JOIN app.vocab_topics t ON t.id = s.topic_id
            LEFT JOIN app.vocab_user_settings settings ON settings.user_id = s.user_id
            WHERE s.id = $1
-           ON CONFLICT (user_id, study_date) DO UPDATE SET
+           ON CONFLICT (user_id, study_date, language) DO UPDATE SET
              sessions = app.vocab_daily_stats.sessions + EXCLUDED.sessions,
              words = app.vocab_daily_stats.words + EXCLUDED.words,
              correct = app.vocab_daily_stats.correct + EXCLUDED.correct,
@@ -406,13 +750,14 @@ export class VocabController {
         );
       }
 
-      const topic = await client.query<{ name: string }>(
-        'SELECT name FROM app.vocab_topics WHERE id = $1',
+      const topic = await client.query<{ name: string; language: 'en' | 'zh' }>(
+        'SELECT name, language FROM app.vocab_topics WHERE id = $1',
         [completed.topic_id],
       );
       const wrongWords = await client.query<WrongWordRow>(
         `SELECT DISTINCT ON (w.id) w.id, w.word, w.phonetic, w.part_of_speech, w.meaning_vi,
-                w.example_en, w.example_vi, w.audio_url, w.alternative_answers, a.user_answer
+                w.example_en, COALESCE(w.example_target, w.example_en) AS example_target,
+                w.example_vi, w.audio_url, w.alternative_answers, a.user_answer
          FROM app.vocab_session_answers a
          JOIN app.vocab_words w ON w.id = a.word_id
          WHERE a.session_id = $1
@@ -425,6 +770,7 @@ export class VocabController {
       return {
         sessionId,
         topic: topic.rows[0].name,
+        language: topic.rows[0].language,
         mode: completed.mode,
         wordCount: completed.word_count,
         score: Number(completed.score),
@@ -437,6 +783,7 @@ export class VocabController {
           partOfSpeech: row.part_of_speech,
           meaningVi: row.meaning_vi,
           exampleEn: row.example_en,
+          exampleTarget: row.example_target,
           exampleVi: row.example_vi,
           audioUrl: row.audio_url,
           alternativeAnswers: row.alternative_answers,
@@ -465,6 +812,7 @@ export class VocabController {
       const sessionResult = await client.query<{
         topic_id: string;
         topic: string;
+        language: 'en' | 'zh';
         mode: 'flashcard' | 'fill_blank' | 'listen_fill';
         word_count: number;
         score: number;
@@ -472,7 +820,7 @@ export class VocabController {
         duration_sec: number | null;
         finished_at: Date | null;
       }>(
-        `SELECT s.topic_id, t.name AS topic, s.mode, s.word_count, s.score,
+        `SELECT s.topic_id, t.name AS topic, t.language, s.mode, s.word_count, s.score,
                 s.total_questions, s.duration_sec, s.finished_at
          FROM app.vocab_study_sessions s
          JOIN app.vocab_topics t ON t.id = s.topic_id
@@ -507,7 +855,8 @@ export class VocabController {
 
       const wrongWords = await client.query<WrongWordRow>(
         `SELECT DISTINCT ON (w.id) w.id, w.word, w.phonetic, w.part_of_speech, w.meaning_vi,
-                w.example_en, w.example_vi, w.audio_url, w.alternative_answers, a.user_answer
+                w.example_en, COALESCE(w.example_target, w.example_en) AS example_target,
+                w.example_vi, w.audio_url, w.alternative_answers, a.user_answer
          FROM app.vocab_session_answers a
          JOIN app.vocab_words w ON w.id = a.word_id
          WHERE a.session_id = $1
@@ -521,11 +870,11 @@ export class VocabController {
                 (now() AT TIME ZONE COALESCE(s.timezone, 'Asia/Ho_Chi_Minh'))::date::text AS local_today
          FROM app.vocab_daily_stats d
          LEFT JOIN app.vocab_user_settings s ON s.user_id = d.user_id
-         WHERE d.user_id = $1
+         WHERE d.user_id = $1 AND d.language = $2
            AND d.study_date >=
              (now() AT TIME ZONE COALESCE(s.timezone, 'Asia/Ho_Chi_Minh'))::date - 365
          ORDER BY d.study_date DESC`,
-        [request.userId],
+        [request.userId, session.language],
       );
       const today = daysResult.rows[0]?.local_today ?? localCalendarDate('Asia/Ho_Chi_Minh');
       const streak = calculateStreak(new Set(daysResult.rows.map((row) => row.study_date)), today);
@@ -582,6 +931,7 @@ export class VocabController {
         correctAnswer: row.word,
         userAnswer: row.user_answer,
         exampleEn: row.example_en,
+        exampleTarget: row.example_target,
         audioUrl: row.audio_url,
       }));
       const botText = percent >= 80
@@ -595,6 +945,7 @@ export class VocabController {
       const structuredPayload = {
         sessionId: input.sessionId,
         topic: session.topic,
+        language: session.language,
         mode: session.mode,
         wordCount: session.word_count,
         score,
@@ -667,6 +1018,30 @@ function parseWordCount(value: unknown): 10 | 15 | 30 | null {
   return value === 10 || value === 15 || value === 30 ? value : null;
 }
 
+function parseStatsDays(value: string | undefined): 7 | 14 | 30 | null {
+  if (value === '7') {
+    return 7;
+  }
+  if (value === '14') {
+    return 14;
+  }
+  if (value === '30') {
+    return 30;
+  }
+  return null;
+}
+
+function parseVocabLanguage(value: string | undefined): 'en' | 'zh' | null {
+  if (value === undefined || value === 'en') {
+    return 'en';
+  }
+  return value === 'zh' ? 'zh' : null;
+}
+
+function isVocabLevel(value: string): boolean {
+  return ['hsk1', 'hsk2', 'hsk3', 'hsk4', 'hsk5', 'hsk6', 'hsk7-9'].includes(value);
+}
+
 function validationError(): HttpException {
   return apiError(HttpStatus.BAD_REQUEST, 'VALIDATION_FAILED', 'Dữ liệu yêu cầu không hợp lệ.');
 }
@@ -704,6 +1079,12 @@ function localCalendarDate(timezone: string): string {
   }).formatToParts(new Date());
   const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
   return `${values['year']}-${values['month']}-${values['day']}`;
+}
+
+function addCalendarDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00.000Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
 }
 
 function modeLabel(mode: 'flashcard' | 'fill_blank' | 'listen_fill'): string {
